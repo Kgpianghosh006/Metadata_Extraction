@@ -3,9 +3,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 import instaloader
 
-import logging
-logging.getLogger("instaloader").setLevel(logging.CRITICAL)
-
 DEFAULT_INPUT = Path("posts_formatted.json")
 DEFAULT_OUTPUT = Path("posts_meta_output.json")
 
