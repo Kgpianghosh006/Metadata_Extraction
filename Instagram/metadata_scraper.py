@@ -1,21 +1,20 @@
-import argparse
-import json
-import sys
-import time
+import argparse, json, sys, time, random
 from datetime import datetime, timezone
 from pathlib import Path
 import instaloader
 
+import logging
+logging.getLogger("instaloader").setLevel(logging.CRITICAL)
+
 DEFAULT_INPUT = Path("posts_formatted.json")
 DEFAULT_OUTPUT = Path("posts_meta_output.json")
-REQUEST_DELAY_SECONDS = 2.0
 
 class ScraperResult:
-    def __init__(self, post_index, post_url, shortcode, success, metadata=None, error_type=None, error_message=None):
+    def __init__(self, post_index, post_url, shortcode, status, metadata=None, error_type=None, error_message=None):
         self.post_index = post_index
         self.post_url = post_url
         self.shortcode = shortcode
-        self.success = success
+        self.success = status
         self.metadata = metadata or {}
         self.error_type = error_type
         self.error_message = error_message
@@ -76,32 +75,12 @@ class InstagramSession:
 
     @property
     def context(self):
-        if self._loader is None:
-            raise RuntimeError("InstagramSession must be used as a context-manager.")
         return self._loader.context
 
 
 class PostMetadataFetcher:
     def __init__(self, context):
         self._context = context
-
-    def fetch(self, post_index, post_url, shortcode, username=None):
-        try:
-            post = instaloader.Post.from_shortcode(self._context, shortcode)
-            metadata = self._extract_post_metadata(post)
-            return ScraperResult(post_index, post_url, shortcode, True, metadata=metadata)
-        
-        except instaloader.exceptions.InstaloaderException as post_exc:
-            # Fallback to Profile if Post fails
-            if username:
-                try:
-                    profile = instaloader.Profile.from_username(self._context, username)
-                    metadata = self._extract_profile_metadata(profile)
-                    return ScraperResult(post_index, post_url, shortcode, True, metadata=metadata)
-                except instaloader.exceptions.InstaloaderException as prof_exc:
-                    return ScraperResult(post_index, post_url, shortcode, False, error_type=type(prof_exc).__name__, error_message=f"Post & Profile fetch failed: {prof_exc}")
-            
-            return ScraperResult(post_index, post_url, shortcode, False, error_type=type(post_exc).__name__, error_message=str(post_exc))
 
     @staticmethod
     def _extract_post_metadata(post):
@@ -118,7 +97,7 @@ class PostMetadataFetcher:
                 "id": safe(lambda: location.id),
                 "name": safe(lambda: location.name),
                 "lat": safe(lambda: location.lat),
-                "lng": safe(lambda: location.lng),
+                "long": safe(lambda: location.lng),
             }
 
         date_utc = safe(lambda: post.date_utc)
@@ -150,10 +129,9 @@ class PostMetadataFetcher:
             "location": location_dict,
             "sidecar_count": safe(lambda: len(list(post.get_sidecar_nodes())) if post.typename == "GraphSidecar" else 0),
             "is_pinned": safe(lambda: post.is_pinned),
-            "pcaption": safe(lambda: post.pcaption),
             "fetched_at_utc": datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
-
+    
     @staticmethod
     def _extract_profile_metadata(profile):
         def safe(fn):
@@ -161,41 +139,72 @@ class PostMetadataFetcher:
                 return fn()
             except Exception:
                 return None
+            
+        follower_count = safe(lambda: profile.followers)
+        following_count = safe(lambda: profile.followees)
+        is_private = safe(lambda: profile.is_private)
 
+        if is_private is True:
+            is_private = True
+        elif is_private is None and follower_count is None and following_count is None:
+            is_private = True
+        else:
+            is_private = False 
+            
         return {
             "typename": "GraphProfile",
             "username": safe(lambda: profile.username),
             "full_name": safe(lambda: profile.full_name),
             "category": safe(lambda: profile.business_category_name),
-            "follower_count": safe(lambda: profile.followers),
-            "following_count": safe(lambda: profile.followees),
+            "follower_count": follower_count,
+            "following_count": following_count,
             "profile_picture_url": safe(lambda: profile.profile_pic_url),
             "bio_text": safe(lambda: profile.biography),
-            "is_private": safe(lambda: profile.is_private),
+            "is_private": is_private,
             "fetched_at_utc": datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
+    
+    def fetch(self, post_index, post_url, shortcode, username=None):
+        try:
+            post = instaloader.Post.from_shortcode(self._context, shortcode)
+            metadata = self._extract_post_metadata(post)
+            return ScraperResult(post_index, post_url, shortcode, True, metadata=metadata)
+        
+        except instaloader.exceptions.InstaloaderException as post_exc:
+            # Fallback to Profile if Post fails
+            if username:
+                try:
+                    profile = instaloader.Profile.from_username(self._context, username)
+                    metadata = self._extract_profile_metadata(profile)
+                    return ScraperResult(post_index, post_url, shortcode, True, metadata=metadata)
+                except instaloader.exceptions.InstaloaderException as exc:
+                    return ScraperResult(post_index, post_url, shortcode, False, error_type=type(exc).__name__, error_message=f"Post & Profile fetch failed: {exc}")
+            
+            return ScraperResult(post_index, post_url, shortcode, False, error_type=type(post_exc).__name__, error_message=f"Post fetch failed: {post_exc}")
 
 
 class OutputSerializer:
     def __init__(self, output_path):
         self._output_path = output_path
-        self.existing_results = []
+        self.old_results = []
+        self.previous_success = 0
         self.previous_elapsed = 0.0
 
         if self._output_path.exists():
             try:
                 with self._output_path.open("r", encoding="utf-8") as f:
                     data = json.load(f)
-                    self.existing_results = data.get("results", [])
+                    self.old_results = data.get("results", [])
+                    self.previous_success = data.get("run_summary", {}).get("successfully_fetched", 0)
                     self.previous_elapsed = data.get("run_summary", {}).get("total_time_seconds", 0.0)
             except json.JSONDecodeError:
                 pass 
 
     def write_incremental(self, new_results, session_elapsed, run_meta):
-        combined_results = self.existing_results + [r.to_dict() for r in new_results]
+        combined_results = self.old_results + [r.to_dict() for r in new_results]
         
-        total_attempted = len(combined_results)
-        success_count = sum(1 for r in combined_results if r.get("status") == "success")
+        total_attempted = len(self.old_results) + len(new_results)
+        success_count = self.previous_success + sum(1 for r in new_results if r.success)
         error_count = total_attempted - success_count
         total_time = self.previous_elapsed + session_elapsed
 
@@ -207,20 +216,19 @@ class OutputSerializer:
                 "failed_to_fetch": error_count,
                 "success_rate_percent": round(100 * success_count / total_attempted, 2) if total_attempted else 0.0,
                 "total_time_seconds": round(total_time, 3),
-                "total_time_human": format_duration(total_time),
+                "total_time_taken": format_duration(total_time),
                 "completed_at_utc": datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             },
             "results": combined_results,
         }
 
-        with self._output_path.open("w", encoding="utf-8") as fh:
-            json.dump(output, fh, ensure_ascii=False, indent=2)
+        with self._output_path.open("w", encoding="utf-8") as f:
+            json.dump(output, f, ensure_ascii=False, indent=2)
 
 
 class MetadataScraperPipeline:
-    def __init__(self, session, delay=REQUEST_DELAY_SECONDS):
+    def __init__(self, session):
         self._session = session
-        self._delay = delay
         self._fetcher = PostMetadataFetcher(session.context)
 
     def run(self, posts, limit=None, serializer=None, run_meta=None):
@@ -245,11 +253,11 @@ class MetadataScraperPipeline:
             if result.success:
                 if result.metadata.get("typename") == "GraphProfile":
                     fc = result.metadata.get("follower_count", "?")
-                    print(f"FALLBACK TO PROFILE (followers={fc})")
+                    print(f"Metadata of the Profile fetched (followers={fc})")
                 else:
                     lc = result.metadata.get("like_count", "?")
                     cc = result.metadata.get("comment_count", "?")
-                    print(f"OK (likes={lc}, comments={cc})")
+                    print(f"Metadata of the Post fetched (likes={lc}, comments={cc})")
             else:
                 print(f"ERR ({result.error_type}: {result.error_message})")
 
@@ -258,7 +266,7 @@ class MetadataScraperPipeline:
                 serializer.write_incremental(results, current_elapsed, run_meta)
 
             if idx < total:
-                time.sleep(self._delay)
+                time.sleep(random.uniform(6.0,15.0))
 
         elapsed = time.perf_counter() - wall_start
         return results, elapsed
@@ -293,11 +301,10 @@ def main():
     parser.add_argument("-o", "--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("-u", "--username", type=str, default=None, help="Instagram username")
     parser.add_argument("-l", "--limit", type=int, default=None, help="Maximum number of posts to scrape")
-    parser.add_argument("-d", "--delay", type=float, default=REQUEST_DELAY_SECONDS, help="Delay between requests")
     args = parser.parse_args()
 
-    with args.input.open("r", encoding="utf-8") as fh:
-        formatted_data = json.load(fh)
+    with args.input.open("r", encoding="utf-8") as f:
+        formatted_data = json.load(f)
 
     all_posts = formatted_data.get("posts", [])
     if not all_posts:
@@ -305,7 +312,7 @@ def main():
 
     serializer = OutputSerializer(args.output)
     
-    scraped_shortcodes = {r.get("shortcode") for r in serializer.existing_results if r.get("shortcode")}
+    scraped_shortcodes = {r.get("shortcode") for r in serializer.old_results if r.get("shortcode")}
     remaining_posts = [p for p in all_posts if p.get("shortcode") not in scraped_shortcodes]
 
     if not remaining_posts:
@@ -317,12 +324,11 @@ def main():
         "output_file": str(args.output.resolve()),
         "total_posts_in_file": len(all_posts),
         "scrape_limit_applied": args.limit,
-        "request_delay_seconds": args.delay,
         "authenticated": bool(args.username),
     }
 
     with InstagramSession(args.username) as session:
-        pipeline = MetadataScraperPipeline(session, delay=args.delay)
+        pipeline = MetadataScraperPipeline(session)
         
         results, elapsed = pipeline.run(
             posts=remaining_posts, 
