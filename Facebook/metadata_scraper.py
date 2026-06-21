@@ -451,8 +451,9 @@ def parse_reel(html, soup, url, category, index, input_name=""):
             "comment_count": comments,
             "relevant_comments": comment_data,
             "caption": caption or "", "description": description or "", "caption_hashtags": re.findall(r"#(\w+)", str(description or caption)),
-            "owner_username": owner, "fetched_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            **context
+            "owner_username": owner, 
+            **context,
+            "fetched_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         }
     }
 
@@ -514,8 +515,8 @@ def parse_post_or_video(html, soup, url, category, index, input_name=""):
             "description": description or "", 
             "caption_hashtags": re.findall(r"#(\w+)", str(description or caption)),
             "owner_username": owner_name or (url.split('/')[3] if len(url.split('/')) > 3 else None),
-            "fetched_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            **context
+            **context,
+            "fetched_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         }
     }
 
@@ -535,6 +536,16 @@ def parse_facebook_url(html_content, target_url, category, post_index, input_nam
     }
 
     return switch.get(url_type, parse_post_or_video)(html_content, soup, target_url, category, post_index, input_name)
+
+def format_duration(seconds):
+    seconds = int(seconds)
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h}h {m:02d}m {s:02d}s"
+    if m:
+        return f"{m}m {s:02d}s"
+    return f"{s}s"
 
 def scrape_visited_history(input_json, output_json, limit=None):
     script_start_time = time.time()
@@ -607,7 +618,7 @@ def scrape_visited_history(input_json, output_json, limit=None):
                     "authenticated": is_logged_in, "total_posts_attempted": attempt_count,
                     "successfully_fetched": success_count, "failed_to_fetch": fail_count,
                     "success_rate_percent": round((success_count / attempt_count * 100), 2) if attempt_count > 0 else 0.0,
-                    "total_time_seconds": round(elapsed_time, 3), "total_time_human": f"{int(elapsed_time // 60)}m {int(elapsed_time % 60):02d}s",
+                    "total_time_seconds": round(elapsed_time, 3), "total_time_taken": format_duration(elapsed_time),
                     "completed_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
                 },
                 "results": scraped_data
