@@ -518,11 +518,30 @@ def scrape_visited_history(input_json, output_json, limit=None):
 
     chrome_options = Options()
     chrome_options.add_argument(f"user-data-dir={os.path.join(os.getcwd(), 'ChromeScraperProfile')}")
-    for arg in ["--disable-gpu", "--no-sandbox", "--disable-dev-shm-usage", "--headless=new", "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)"]:
+
+    # 1. Disable standard automation flags
+    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+    
+    # 2. Exclude the "Chrome is being controlled by automated test software" infobar
+    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    chrome_options.add_experimental_option('useAutomationExtension', False)
+
+    # Removed the diable GPU, sandbox, and SHM flags.
+    # Need to add them --no-sandbox and --disable-dev-shm-usage, when the code will deployed in Docker or AWS
+    for arg in ["--headless", "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36"]:
         chrome_options.add_argument(arg)
 
     print(f"Launching scraper for {len(remaining_targets)} URLs...")
     driver = webdriver.Chrome(options=chrome_options)
+
+    # 3. CDP INJECTION: Mathematically erase the webdriver flag from the JavaScript engine
+    driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
+        'source': '''
+            Object.defineProperty(navigator, 'webdriver', {
+              get: () => undefined
+            })
+        '''
+    })
 
     def save_state():
         elapsed_time = time.time() - script_start_time
