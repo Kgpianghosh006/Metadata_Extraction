@@ -213,7 +213,7 @@ class OutputSerializer:
                 "failed_to_fetch": error_count,
                 "success_rate_percent": round(100 * success_count / total_attempted, 2) if total_attempted else 0.0,
                 "total_time_seconds": round(total_time, 3),
-                "total_time_taken": format_duration(total_time),
+                "total_time_taken": f"{int(total_time // 60)}m {int(total_time % 60):02d}s",
                 "completed_at_utc": datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             },
             "results": combined_results,
@@ -268,21 +268,11 @@ class MetadataScraperPipeline:
         elapsed = time.perf_counter() - wall_start
         return results, elapsed
 
-
-def format_duration(seconds):
-    seconds = int(seconds)
-    h, rem = divmod(seconds, 3600)
-    m, s = divmod(rem, 60)
-    if h:
-        return f"{h}h {m:02d}m {s:02d}s"
-    if m:
-        return f"{m}m {s:02d}s"
-    return f"{s}s"
-
 def print_final_summary(results, elapsed, out_path):
     success = sum(1 for r in results if r.success)
     errors = len(results) - success
     rate = (100 * success / len(results)) if results else 0.0
+    elapsed_time = int(elapsed)
 
     print("\nScrape Completion Summary (Current Batch)")
     print(f"Posts attempted : {len(results)}")
@@ -290,7 +280,7 @@ def print_final_summary(results, elapsed, out_path):
     print(f"Failed          : {errors}")
     print(f"Success rate    : {rate:.1f}%")
     print(f"Output saved to : {out_path.resolve()}")
-    print(f"Total time taken: {format_duration(elapsed)} ({elapsed:.3f} seconds)\n")
+    print(f"Total time taken: {int(elapsed // 60)}m {int(elapsed % 60):02d}s")
 
 def main():
     parser = argparse.ArgumentParser()
