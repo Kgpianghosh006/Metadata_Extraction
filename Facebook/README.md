@@ -21,10 +21,10 @@ pip install selenium beautifulsoup4 requests
 
 | File | Purpose |
 |------|---------|
-| `init_profile.py`| Launches a temporary Chrome instance, prompts you to log in to Facebook, and saves the profile (cookies) in `ChromeScraperProfile/`. |
-| `json_formatter.py`| Reads `recently_viewed.json` (or your own input) and writes a clean `viewed_formatted.json` containing a flat list of URLs and associated metadata. |
-| `metadata_scraper.py` | Iterates over the formatted URLs, scrapes post metadata using Selenium + BeautifulSoup, and saves the result to `scraped_viewed_metadata.json`. |
-| `media_downloader.py` | Consumes the JSON produced by the scraper and downloads all media files into a structured `downloaded_media/` directory. |
+| `init_profile.py`| Launches an automated Chrome instance, prompts you to log in to Facebook, and saves the profile including the cookies in `ChromeScraperProfile/`. |
+| `json_formatter.py`| Reads `recently_viewed.json` (or your own input json file) and writes a clean `viewed_formatted.json` (or your own output formatted json file name) containing a flat list of URLs and associated metadata. |
+| `metadata_scraper.py` | Iterates over the formatted URLs, scrapes post metadata using Selenium + BeautifulSoup4, and saves the result to `scraped_viewed_metadata.json` (or your own output metadata json file name). |
+| `media_downloader.py` | Consumes the JSON produced by the scraper and downloads all media files into a structured `downloaded_media/` directory (or your own directory name). |
 
 ---
 
@@ -57,18 +57,18 @@ python init_profile.py
 ```powershell
 python fb_json_formatter.py -i recently_viewed.json -o viewed_formatted.json
 ```
-- The script extracts the `uri` (URL) for each entry and de‑duplicates them.
+- The script extracts the `uri` (URL) for each entry and de‑duplicates them and also skips the invalid ones.
 - Result: `viewed_formatted.json` – a tidy JSON with a top‑level `views` array and a `meta` block.
 
 ### 3️⃣ Scrape Metadata (`metadata_scraper.py`)
 ```powershell
 python metadata_scraper.py -i viewed_formatted.json -o scraped_viewed_metadata.json -l 50 # optional: stop after 50 URLs
 ```
-- Reads the formatted URLs, opens each page in a **headless** Chrome instance that re‑uses the profile from step 1.
+- Reads the formatted URLs, opens each page in a **headless** Chrome instance that re‑uses the profile cookies from step 1.
 - Extracts:
   - Post ID, timestamps (Unix + ISO)
-  - Caption / description
-  - Like / comment counts (robust parsing of various UI patterns)
+  - Caption, description, relevant comments (top 6)
+  - Like and comment counts (robust parsing of various UI patterns)
   - Media URLs (video, thumbnail, profile picture)
   - Additional context (location, side‑car count, pinned flag, etc.)
 - Progress and a run‑summary are printed to the console and saved alongside the scraped results.
