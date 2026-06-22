@@ -1,6 +1,6 @@
 # Facebook Metadata Scraper
 
-A lightweight set of Python scripts that automate the extraction of Facebook post metadata and media (videos, images, profile pictures) using Selenium and BeautifulSoup.
+A lightweight set of Python scripts that automate the extraction of Facebook post metadata and media using Selenium and BeautifulSoup.
 
 ## Overview
 These four scripts work together to:
