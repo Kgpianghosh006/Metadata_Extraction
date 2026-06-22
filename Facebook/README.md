@@ -21,10 +21,10 @@ pip install selenium beautifulsoup4 requests
 
 | File | Purpose |
 |------|---------|
-| [`init_profile.py`]| Launches a temporary Chrome instance, prompts you to log in to Facebook, and saves the profile (cookies) in `ChromeScraperProfile/`. |
-| [`json_formatter.py`]| Reads `recently_viewed.json` (or your own input) and writes a clean `viewed_formatted.json` containing a flat list of URLs and associated metadata. |
-| [`metadata_scraper.py`] | Iterates over the formatted URLs, scrapes post metadata using Selenium + BeautifulSoup, and saves the result to `scraped_viewed_metadata.json`. |
-| [`media_downloader.py`] | Consumes the JSON produced by the scraper and downloads all media files into a structured `downloaded_media/` directory. |
+| `init_profile.py`| Launches a temporary Chrome instance, prompts you to log in to Facebook, and saves the profile (cookies) in `ChromeScraperProfile/`. |
+| `json_formatter.py`| Reads `recently_viewed.json` (or your own input) and writes a clean `viewed_formatted.json` containing a flat list of URLs and associated metadata. |
+| `metadata_scraper.py` | Iterates over the formatted URLs, scrapes post metadata using Selenium + BeautifulSoup, and saves the result to `scraped_viewed_metadata.json`. |
+| `media_downloader.py` | Consumes the JSON produced by the scraper and downloads all media files into a structured `downloaded_media/` directory. |
 
 ---
 
