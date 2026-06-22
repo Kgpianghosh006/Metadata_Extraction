@@ -224,6 +224,23 @@ Only the `url` field is needed by the scraper.
   ]
 }
 ```
+##Note
+
+If there are errors coming as mentioned below :
+```powershell
+Stacktrace:
+        chromedriver!GetHandleVerifier [0x7ff7c8b23fa5+14925]
+        chromedriver!GetHandleVerifier [0x7ff7c8b24000+14980]
+        chromedriver!(No symbol) [0x7ff7c866793d]
+        .                .
+        .                .
+        KERNEL32!BaseThreadInitThunk [0x7ff8c0a3e957+17]
+        ntdll!RtlUserThreadStart [0x7ff8c17c7c1c+2c]
+```
+Just run the following command in the terminal to forcefully close all the Google Chrome processes:
+```powershell
+taskkill /F /IM chrome.exe /T
+```
 
 ## License
 
