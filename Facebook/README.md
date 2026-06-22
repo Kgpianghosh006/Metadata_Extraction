@@ -32,7 +32,7 @@ pip install selenium beautifulsoup4 requests
 
 ```mermaid
 flowchart TD
-    A[init_profile.py] -->|creates Chrome profile| B[fb_json_formatter.py]
+    A[init_profile.py] -->|creates Chrome profile| B[json_formatter.py]
     B -->|produces viewed_formatted.json| C[metadata_scraper.py]
     C -->|produces scraped_viewed_metadata.json| D[media_downloader.py]
     D -->|downloads videos/images| E[downloaded_media/]
