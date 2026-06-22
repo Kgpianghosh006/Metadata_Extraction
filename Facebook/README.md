@@ -165,7 +165,7 @@ Only the `url` field is needed by the scraper.
     "output_file": "Path of output file",
     "total_posts_in_file": ...,
     "scrape_limit_applied": ...,
-    "authenticated": true (if our cookies are loaded by the init_profile.py, else false),
+    "authenticated": (true if our cookies are loaded by the init_profile.py, else false),
     "total_posts_attempted": ...,
     "successfully_fetched": ...,
     "failed_to_fetch": ...,
@@ -176,30 +176,48 @@ Only the `url` field is needed by the scraper.
   },
   "results": [
     {
-      "post_index": 1,
-      "post_url": "https://www.facebook.com/…",
-      "facebook_category": "Video",
-      "status": "success",
+      "post_index": Sequential index assigned by the scraper ,
+      "post_url": Scraped URL of the post,
+      "facebook_category": Category copied from the formatted input JSON,
+      "status": Status of the extraction of metadata,
       "metadata": {
-        "media_id": "123456789012345",
-        "typename": "GraphVideo",
-        "is_video": true,
-        "video_url": "https://scontent.fccu16-1.fna.fbcdn.net/...",
-        "thumbnail_url": "https://.../thumbnail.jpg",
-        "like_count": 1234,
-        "comment_count": 56,
-        "relevant_comments": ["Nice!", "Awesome video"],
-        "caption": "My vacation",
-        "description": "",
-        "caption_hashtags": ["vacation", "travel"],
-        "owner_username": "john.doe",
-        "posted_at_unix": 1700001234,
-        "posted_at_utc": "2023-10-14T09:20:34Z",
-        "location": "Paris, France" or NULL,
-        "sidecar_count": 0,
-        "is_pinned": false,
-        "fetched_at_utc": "2023-10-14T10:12:00Z"
+        "media_id": “pfbid no.” - numeric id or “UNKNOWN_ID”,
+        "typename": Based on the name of the node given in GraphQL like GraphVideo, GraphImage, GraphSideCar,
+        "is_video": Denotes whether it contains video or not,
+        "video_url": Link of the video url (if it is video post/ reel,
+        "thumbnail_url": Link of the thumbnail of the post (if it contains a photo or video),
+        "like_count": No. of likes in a post/reel,
+        "comment_count": No. of comments in a post/reel,
+        "relevant_comments": Gives a list of top 6 relevant comments,
+        "caption":  caption of a post/reel,
+        "description": description(if available) for the post/reel,
+        "caption_hashtags": contains hashtags for a particular post,
+        "owner_username": username of the post,
+        "posted_at_unix": timestamps in unix seconds,
+        "posted_at_utc": timestamp formatted as UTC ISO string,
+        “location” : location of the post,
+        "sidecar_count": no. of detected sidecar/album attachments,
+        "is_pinned": whether the page appears in available page’s HTML,
+        "fetched_at_utc": UTC timestamp when the metadata is fetched
       }
+    },
+    {
+      "post_index": Sequential index assigned by the scraper ,
+      "post_url": Scraped URL of the profile/page,
+      "facebook_category": Category copied from the formatted input JSON,
+      "status": Status of the extraction of metadata,
+      "metadata": {
+        "typename": Based on the name of the node given in GraphQL - GraphProfile,
+         "username": User Profile name or Page name,
+        "full_name": Full name of the Profile or Post,
+        "category": Type of the Profile or Page like Digital Creator, Comedian etc,
+        "follower_count": Follower count of the profile/page,
+        "following_count": Following count of the profile/page,
+        "profile_picture_url": URL of the profile/page photo,
+        "bio_text": Extract the about information of the profile/page(if available to be extracted),
+        "fetched_at_utc": UTC timestamp when the metadata is fetched
+      }
+    }
     }
     // … more results …
   ]
