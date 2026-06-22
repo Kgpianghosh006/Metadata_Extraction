@@ -191,7 +191,7 @@ Only the `post_url` and `shortcode` fields are needed by the scraper.
         "fetched_at_utc": "Timestamp of when the metadata was scraped, formatted as a UTC ISO string"
       }
     },
-        //"..For Profile.."
+        //"..For Profile or Page.."
     {
   "post_index": "Sequential index assigned to the profile during scraping",
   "post_url": "The direct Instagram URL of the scraped profile",
