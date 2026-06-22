@@ -113,7 +113,7 @@ class ExtractorHelper:
         
         # Strictly scoped to the isolated post node
         if not caption or not description:
-            for script in soup.find_all("script", type=["application/json", "application/ld+json"]):
+            for script in soup.find_all("script", type=["application/json"]):
                 text = script.string
                 if not text or (media_id and media_id not in text): continue
                 
@@ -199,7 +199,7 @@ class ExtractorHelper:
         likes, comments = None, None
         
         if media_id:
-            for script in soup.find_all("script", type=["application/json", "application/ld+json"]):
+            for script in soup.find_all("script", type=["application/json"]):
                 text = script.string
                 if not text or media_id not in text: continue
                 try:
@@ -277,7 +277,7 @@ class ExtractorHelper:
     def extract_comments(html_text, media_id=None, limit=6):
         extracted = []        
         soup = BeautifulSoup(html_text, 'html.parser')
-        for script in soup.find_all("script", type=["application/json", "application/ld+json"]):
+        for script in soup.find_all("script", type=["application/json"]):
             text = script.string
             if not text or (media_id and media_id not in text): continue
             
@@ -307,7 +307,7 @@ class ExtractorHelper:
         thumbnail_url = ExtractorHelper.get_meta(soup, "og:image")
 
         if is_video:
-            for script in soup.find_all("script", type=["application/json", "application/ld+json"]):
+            for script in soup.find_all("script", type=["application/json"]):
                 text = script.string
                 if text and ("browser_native" in text or "playable_url" in text):
                     # Look for HD first, then SD, then generic
