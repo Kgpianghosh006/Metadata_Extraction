@@ -673,7 +673,7 @@ def scrape_visited_history(input_json, output_json, limit=None):
                     "authenticated": is_logged_in, "total_posts_attempted": attempt_count,
                     "successfully_fetched": success_count, "failed_to_fetch": fail_count,
                     "success_rate_percent": round((success_count / attempt_count * 100), 2) if attempt_count > 0 else 0.0,
-                    "total_time_seconds": round(elapsed_time, 3), "total_time_human": f"{int(elapsed_time // 60)}m {int(elapsed_time % 60):02d}s",
+                    "total_time_seconds": round(elapsed_time, 3), "total_time_taken": f"{int(elapsed_time // 60)}m {int(elapsed_time % 60):02d}s",
                     "completed_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
                 },
                 "results": scraped_data
