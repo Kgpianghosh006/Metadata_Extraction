@@ -175,6 +175,7 @@ Only the `url` field is needed by the scraper.
     "completed_at_utc": "..."
   },
   "results": [
+    //"..For Post or Reel.."
     {
       "post_index": "Sequential index assigned by the scraper",
       "post_url": "Scraped URL of the post",
@@ -201,6 +202,7 @@ Only the `url` field is needed by the scraper.
         "fetched_at_utc": "UTC timestamp when the metadata is fetched"
       }
     },
+        //"..For Profile or group.."
     {
       "post_index": "Sequential index assigned by the scraper",
       "post_url": "Scraped URL of the profile/page",
