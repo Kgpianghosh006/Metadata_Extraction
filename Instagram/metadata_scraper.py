@@ -1,10 +1,11 @@
-import argparse, json, sys, time, random
+import argparse, csv, json, sys, time, random
 from datetime import datetime, timezone
 from pathlib import Path
 import instaloader
 
-DEFAULT_INPUT = Path("posts_formatted.json")
+DEFAULT_INPUT  = Path("json_data_formatted.csv")
 DEFAULT_OUTPUT = Path("posts_meta_output.json")
+
 
 class ScraperResult:
     def __init__(self, post_index, post_url, shortcode, status, metadata=None, error_type=None, error_message=None):
@@ -32,10 +33,11 @@ class ScraperResult:
             }
         return base
 
+
 class InstagramSession:
     def __init__(self, username=None):
         self._username = username
-        self._loader = None
+        self._loader   = None
 
     def __enter__(self):
         self._loader = instaloader.Instaloader(
@@ -53,10 +55,22 @@ class InstagramSession:
             print(f"Loading saved session for @{self._username}...")
             try:
                 self._loader.load_session_from_file(self._username)
+
+                # Restore x-csrftoken so Instagram's GraphQL endpoint accepts requests.
+                csrftoken = self._loader.context._session.cookies.get("csrftoken")
+                if csrftoken:
+                    self._loader.context._session.headers.update({
+                        "x-csrftoken": csrftoken,
+                        "x-ig-app-id": "936619743392459",
+                        "User-Agent": "Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Mobile Safari/537.36",
+                        "Origin": "https://www.instagram.com",
+                        "Referer": "https://www.instagram.com/"
+                    })
+                    print(f"Successfully loaded x-csrftoken : {csrftoken}.")
                 print("Success: Session loaded.")
             except FileNotFoundError:
                 print(f"[ERROR] Session file for @{self._username} not found.", file=sys.stderr)
-                print(f"Please run 'instaloader -l {self._username}' in your terminal first.", file=sys.stderr)
+                print(f"Please run create_session.py to generate a session file first.", file=sys.stderr)
                 sys.exit(1)
             except Exception as exc:
                 print(f"[ERROR] Failed to load session: {exc}", file=sys.stderr)
@@ -78,6 +92,23 @@ class InstagramSession:
 class PostMetadataFetcher:
     def __init__(self, context):
         self._context = context
+
+    @staticmethod
+    def _extract_comments(post, limit=10):
+        texts = []
+        try:
+            for comment in post.get_comments():
+                if len(texts) >= limit:
+                    break
+                try:
+                    text = comment.text
+                    if text:
+                        texts.append(text)
+                except Exception:
+                    pass  # skip any unreadable comment
+        except Exception:
+            pass  # comment stream failed
+        return texts
 
     @staticmethod
     def _extract_post_metadata(post):
@@ -109,6 +140,7 @@ class PostMetadataFetcher:
             "thumbnail_url": safe(lambda: post.url),
             "like_count": safe(lambda: post.likes),
             "comment_count": safe(lambda: post.comments),
+            "relevant_comments": PostMetadataFetcher._extract_comments(post),
             "caption": safe(lambda: post.caption),
             "caption_hashtags": safe(lambda: list(post.caption_hashtags)),
             "caption_mentions": safe(lambda: list(post.caption_mentions)),
@@ -128,7 +160,7 @@ class PostMetadataFetcher:
             "is_pinned": safe(lambda: post.is_pinned),
             "fetched_at_utc": datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
-    
+
     @staticmethod
     def _extract_profile_metadata(profile):
         def safe(fn):
@@ -136,7 +168,7 @@ class PostMetadataFetcher:
                 return fn()
             except Exception:
                 return None
-            
+
         follower_count = safe(lambda: profile.followers)
         following_count = safe(lambda: profile.followees)
         is_private = safe(lambda: profile.is_private)
@@ -146,8 +178,8 @@ class PostMetadataFetcher:
         elif is_private is None and follower_count is None and following_count is None:
             is_private = True
         else:
-            is_private = False 
-            
+            is_private = False
+
         return {
             "typename": "GraphProfile",
             "username": safe(lambda: profile.username),
@@ -160,15 +192,16 @@ class PostMetadataFetcher:
             "is_private": is_private,
             "fetched_at_utc": datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
-    
+
     def fetch(self, post_index, post_url, shortcode, username=None):
         try:
             post = instaloader.Post.from_shortcode(self._context, shortcode)
             metadata = self._extract_post_metadata(post)
             return ScraperResult(post_index, post_url, shortcode, True, metadata=metadata)
-        
-        except instaloader.exceptions.InstaloaderException as post_exc:
-            # Fallback to Profile if Post fails
+
+        except Exception as post_exc:
+            print(f" -> [Post Error: {type(post_exc).__name__}]")
+            # Post fetch failed for any reason — try Profile as fallback
             if username:
                 try:
                     profile = instaloader.Profile.from_username(self._context, username)
@@ -178,7 +211,6 @@ class PostMetadataFetcher:
                     return ScraperResult(post_index, post_url, shortcode, False, error_type=type(exc).__name__, error_message=f"Post & Profile fetch failed: {exc}")
             
             return ScraperResult(post_index, post_url, shortcode, False, error_type=type(post_exc).__name__, error_message=f"Post fetch failed: {post_exc}")
-
 
 class OutputSerializer:
     def __init__(self, output_path):
@@ -230,7 +262,7 @@ class MetadataScraperPipeline:
 
     def run(self, posts, limit=None, serializer=None, run_meta=None):
         subset = posts[:limit] if limit else posts
-        total = len(subset)
+        total  = len(subset)
         results = []
 
         print(f"\nStarting run -- {total} remaining post(s) to process...\n")
@@ -250,11 +282,11 @@ class MetadataScraperPipeline:
             if result.success:
                 if result.metadata.get("typename") == "GraphProfile":
                     fc = result.metadata.get("follower_count", "?")
-                    print(f"Metadata of the Profile fetched (followers={fc})")
+                    print(f"Profile fetched (followers={fc})")
                 else:
                     lc = result.metadata.get("like_count", "?")
                     cc = result.metadata.get("comment_count", "?")
-                    print(f"Metadata of the Post fetched (likes={lc}, comments={cc})")
+                    print(f"Post fetched (likes={lc}, comments={cc})")
             else:
                 print(f"ERR ({result.error_type}: {result.error_message})")
 
@@ -263,16 +295,16 @@ class MetadataScraperPipeline:
                 serializer.write_incremental(results, current_elapsed, run_meta)
 
             if idx < total:
-                time.sleep(random.uniform(6.0,15.0))
+                time.sleep(random.uniform(6.0, 15.0))
 
         elapsed = time.perf_counter() - wall_start
         return results, elapsed
+
 
 def print_final_summary(results, elapsed, out_path):
     success = sum(1 for r in results if r.success)
     errors = len(results) - success
     rate = (100 * success / len(results)) if results else 0.0
-    elapsed_time = int(elapsed)
 
     print("\nScrape Completion Summary (Current Batch)")
     print(f"Posts attempted : {len(results)}")
@@ -282,23 +314,46 @@ def print_final_summary(results, elapsed, out_path):
     print(f"Output saved to : {out_path.resolve()}")
     print(f"Total time taken: {int(elapsed // 60)}m {int(elapsed % 60):02d}s")
 
+
+def load_posts_from_csv(csv_path):
+    posts = []
+    with csv_path.open("r", encoding="utf-8-sig", newline="") as f:
+        reader = csv.DictReader(f)
+        for i, row in enumerate(reader, start=1):
+            posts.append({
+                "post_index": i,
+                "post_url":   row.get("content_url", ""),
+                "shortcode":  row.get("shortcode", ""),
+                "owner": {
+                    "username": row.get("owner_username") or None,
+                },
+            })
+    return posts
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("-i", "--input", type=Path, default=DEFAULT_INPUT)
-    parser.add_argument("-o", "--output", type=Path, default=DEFAULT_OUTPUT)
-    parser.add_argument("-u", "--username", type=str, default=None, help="Instagram username")
+    parser.add_argument("-i", "--input", type=Path, default=DEFAULT_INPUT, help="Input file (.csv or .json)")
+    parser.add_argument("-o", "--output", type=Path, default=DEFAULT_OUTPUT, help="Output JSON file")
+    parser.add_argument("-u", "--username", type=str,  default=None, help="Instagram username for authenticated session")
     parser.add_argument("-l", "--limit", type=int, default=None, help="Maximum number of posts to scrape")
     args = parser.parse_args()
 
-    with args.input.open("r", encoding="utf-8") as f:
-        formatted_data = json.load(f)
+    if args.input.suffix.lower() == ".csv":
+        print(f"Reading CSV input  : {args.input.resolve()}")
+        all_posts = load_posts_from_csv(args.input)
+    elif args.input.suffix.lower() == ".json":
+        print(f"Reading JSON input : {args.input.resolve()}")
+        with args.input.open("r", encoding="utf-8") as f:
+            all_posts = json.load(f).get("posts", [])
+    else:
+        sys.exit(f"\n[ERROR] Unsupported file type '{args.input.suffix}'. Provide a .csv or .json file.\n")
 
-    all_posts = formatted_data.get("posts", [])
     if not all_posts:
         sys.exit("\n[ERROR] No posts found in the input file.\n")
 
     serializer = OutputSerializer(args.output)
-    
+
     scraped_shortcodes = {r.get("shortcode") for r in serializer.old_results if r.get("shortcode")}
     remaining_posts = [p for p in all_posts if p.get("shortcode") not in scraped_shortcodes]
 
@@ -316,12 +371,12 @@ def main():
 
     with InstagramSession(args.username) as session:
         pipeline = MetadataScraperPipeline(session)
-        
+
         results, elapsed = pipeline.run(
-            posts=remaining_posts, 
-            limit=args.limit, 
-            serializer=serializer, 
-            run_meta=run_meta
+            posts=remaining_posts,
+            limit=args.limit,
+            serializer=serializer,
+            run_meta=run_meta,
         )
 
     print_final_summary(results, elapsed, args.output)
