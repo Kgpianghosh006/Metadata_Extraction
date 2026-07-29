@@ -33,8 +33,7 @@ class InstagramMediaDownloader:
             logging.error(f"Unexpected error saving {filepath}: {e}")
             return False
 
-    def process_post(self, metadata: Dict[str, Any]):
-        shortcode = metadata.get("shortcode", "unknown")
+    def process_post(self, shortcode: str, metadata: Dict[str, Any]):
         post_dir = os.path.join(self.base_dir, shortcode)
         os.makedirs(post_dir, exist_ok=True)
 
@@ -68,10 +67,12 @@ class InstagramMediaDownloader:
         
         for item in results:
             metadata = item.get("metadata")
+            shortcode = item.get("shortcode", "unknown")
+            
             if metadata and item.get("status") == "success":
-                self.process_post(metadata)
+                self.process_post(shortcode, metadata)
             else:
-                logging.warning(f"Skipping post {item.get('shortcode')} due to missing metadata or failed status.")
+                logging.warning(f"Skipping post {shortcode} due to missing metadata or failed status.")
 
         logging.info("Bulk download complete.")
 
