@@ -8,7 +8,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 
 class ExtractorHelper:
-
+    
     @staticmethod
     def get_meta(soup, prop):
         tag = soup.find("meta", property=prop) or soup.find("meta", attrs={"name": prop})
