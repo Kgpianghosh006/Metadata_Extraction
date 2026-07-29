@@ -5,7 +5,7 @@ A lightweight set of Python scripts that automate the extraction of Instagram po
 ## Overview
 These four scripts work together to:
 1. **Create a persistent Instagram session** that stores your login cookies for authenticated scraping.
-2. **Convert the zip folder** (downloaded from Instagram) into a tidy list of URLs.
+2. **Convert the raw zip folder** (downloaded from Instagram) into a tidy list of URLs.
 3. **Visit each URL**, scrape useful metadata (post ID, timestamps, like counts, comment counts, captions, etc.) and store the results in `posts_meta_output.json`.
 4. **Download any media** (videos and images) referenced in the scraped metadata.
 
