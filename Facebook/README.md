@@ -55,14 +55,14 @@ python init_profile.py
 
 ### 2️⃣ Format the raw JSON (`fb_json_formatter.py`)
 ```powershell
-python fb_json_formatter.py -i recently_viewed.json -o viewed_formatted.json
+python json_formatter.py -i recently_viewed.json -o json_data_formatted.csv
 ```
-- The script extracts the `uri` (URL) for each entry and de‑duplicates them and also skips the invalid ones.
-- Result: `viewed_formatted.json` – a tidy JSON with a top‑level `views` array and a `meta` block.
+- The script extracts the `uri` (URL) for each entry and de‑duplicates them.
+- Result: `json_data_formatted.csv` – a tidy csv file \
 
 ### 3️⃣ Scrape Metadata (`metadata_scraper.py`)
 ```powershell
-python metadata_scraper.py -i viewed_formatted.json -o scraped_viewed_metadata.json -l 50 # optional: stop after 50 URLs
+python metadata_scraper.py -i json_data_formatted.csv -o viewed_metadata.json -l 50 # optional: stop after 50 URLs
 ```
 - Reads the formatted URLs, opens each page in a **headless** Chrome instance that re‑uses the profile cookies from step 1.
 - Extracts:
@@ -88,7 +88,7 @@ python media_downloader.py -i scraped_viewed_metadata.json -dir downloaded_media
 
 ## Output Formats Explained
 
-The `fb_json_formatter.py` script normalizes Facebook data exports and outputs a deduplicated CSV file (`json_data_formatted.csv`).
+The `json_formatter.py` script normalizes Facebook data exports and outputs a deduplicated CSV file (`json_data_formatted.csv`).
 
 ### Schema Definition
 
