@@ -22,8 +22,8 @@ pip install selenium beautifulsoup4 requests
 | File | Purpose |
 |------|---------|
 | `init_profile.py`| Launches an automated Chrome instance, prompts you to log in to Facebook, and saves the profile including the cookies in `ChromeScraperProfile/`. |
-| `json_formatter.py`| Reads `recently_viewed.json` (or your own input json file) and writes a clean `viewed_formatted.json` (or your own output formatted json file name) containing a flat list of URLs and associated metadata. |
-| `metadata_scraper.py` | Iterates over the formatted URLs, scrapes post metadata using Selenium + BeautifulSoup4, and saves the result to `scraped_viewed_metadata.json` (or your own output metadata json file name). |
+| `json_formatter.py`| Reads `facebook_data.zip` (or your own facebook data zip folder) and writes a clean `json_data_formatted.csv` (or your own output formatted csv file name) containing a flat list of URLs and associated metadata. |
+| `metadata_scraper.py` | Iterates over the formatted URLs, scrapes post metadata using Selenium + BeautifulSoup4, and saves the result to `viewed_metadata.json` (or your own output metadata json file name). |
 | `media_downloader.py` | Consumes the JSON produced by the scraper and downloads all media files into a structured `downloaded_media/` directory (or your own directory name). |
 
 ---
@@ -33,8 +33,8 @@ pip install selenium beautifulsoup4 requests
 ```mermaid
 flowchart TD
     A[init_profile.py] -->|creates Chrome profile| B[json_formatter.py]
-    B -->|produces viewed_formatted.json| C[metadata_scraper.py]
-    C -->|produces scraped_viewed_metadata.json| D[media_downloader.py]
+    B -->|produces json_data_formatted.csv| C[metadata_scraper.py]
+    C -->|produces viewed_metadata.json| D[media_downloader.py]
     D -->|downloads videos/images| E[downloaded_media/]
 ```
 
@@ -86,78 +86,22 @@ python media_downloader.py -i scraped_viewed_metadata.json -dir downloaded_media
 
 ---
 
-## JSON Formats Explained
+## Output Formats Explained
 
-### `recently_viewed.json`
-The raw export from Facebook. It contains nested categories → children → `entries` objects. Each entry holds a `data` dict with fields such as `uri`, `name`, `value`, and `timestamp`.
-```json
-"recently_viewed": [
-    {
-      "name": "Videos and shows",
-      "description": "Videos and shows you've recently viewed, and the time you've spent watching",
-      "children": [
-        {
-          "name": "Time Spent",
-          "description": "The amount of time you've spent watching videos from a show Page",
-          "entries": [
-            {
-              "timestamp": 1567395492,
-              "data": {
-                "name": "ABCDE",
-                "uri": "https://facebook.com/ABCDE",
-                "watch_time": "X"
-              }
-            }
-          ]
-        },
-        {
-          "name": "Shows",
-          "description": "A list of the individual videos you've watched",
-          "entries": [
-            {
-              "timestamp": 123456,
-              "data": {
-                "uri": "https://www.facebook.com/ABCDE/videos/pfbid_id/",
-                "name": "ABCDE"
-              }
-            }
-          ]
-        }
-      ]
-    }
-  ]
-```
+The `fb_json_formatter.py` script normalizes Facebook data exports and outputs a deduplicated CSV file (`json_data_formatted.csv`).
 
-### `viewed_formatted.json`
-```json
-{
-  "meta": {
-        "source_file": "recently_viewed.json",
-        "total_raw_entries": "...",
-        "total_unique_views": "...",
-        "skipped_invalid_no_data": "...",
-        "skipped_duplicate": "...",
-        "generated_at_utc": "...."
-    },
-  "views": [
-    {
-      "index": 1,
-      "category": "…",
-      "name": "…",
-      "url": "https://www.facebook.com/…",
-      "action_value": "…",
-      "watch_time_seconds": null,
-      "watch_position_seconds": null,
-      "timestamp_unix": 1700000000,
-      "timestamp_iso": "2023-10-14T09:20:00Z"
-    }
-    // "… more entries …"
-  ]
-}
-```
-Only the `url` field is needed by the scraper.
+### Schema Definition
 
-### `scraped_viewed_metadata.json`
+| Column Header | Data Type | Description | Example |
+| :--- | :--- | :--- | :--- |
+| `source_file` | String | Original Facebook JSON file parsed | `recently_viewed.json` |
+| `category` | String | Extracted activity label or event classification | `Viewed Content` |
+| `name` | String | Target entity display name or event title | `Official Post` |
+| `url` | String | Normalized Facebook URI | `https://www.facebook.com/1000759...` |
+| `timestamp_unix` | Integer / String | Raw epoch timestamp from export source | `1772433600` |
+| `timestamp_iso` | String (ISO-8601) | Converted UTC timestamp (`YYYY-MM-DDTHH:MM:SSZ`) | `2026-03-01T06:40:00Z` |
+
+### `viewed_metadata.json`
 ```json
 {
   "run_summary": {
