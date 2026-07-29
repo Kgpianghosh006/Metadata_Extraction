@@ -1,8 +1,11 @@
-import os, json, re, time, random, argparse
+import os, json, re, time, random, argparse, csv
 from datetime import datetime, timezone
 from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
 
 class ExtractorHelper:
 
@@ -27,8 +30,9 @@ class ExtractorHelper:
 
     @staticmethod
     def get_primary_metric(patterns, html_text):
+        clean_html = str(html_text).replace('\n', '')
         for p in patterns:
-            for match in re.findall(p, html_text, re.IGNORECASE):
+            for match in re.findall(p, clean_html, re.I):
                 val = ExtractorHelper.parse_int(match if isinstance(match, str) else match[0])
                 if val is not None: 
                     return val
@@ -40,126 +44,27 @@ class ExtractorHelper:
         text_lower = text.lower()
         if owner_name and owner_name.lower() in text_lower and "posted" in text_lower: return True
         if re.search(r"posted an? (episode|video)|explore more in video", text_lower): return True
+        if re.search(r"\d+[,.]?\d*\s*(likes?|followers?)\s*[·•]\s*\d", text_lower): return True
+        if owner_name and text_lower.strip() == owner_name.lower().strip(): return True
+        if re.search(r"'s post:?\s*$", text_lower): return True
         return False
 
     @staticmethod
-    def isolate_post_node(obj, media_id):
-        """Depth-First Search that finds the highest enclosing post node to guarantee memory isolation."""
-        if not media_id: return obj
-        
-        valid_nodes = []
-        
-        def traverse(node):
-            if isinstance(node, dict):
-                contains_target = False
-                if str(node.get("id")) == str(media_id) or str(node.get("post_id")) == str(media_id):
-                    contains_target = True
-                
-                # Check all child branches
-                for k, v in node.items():
-                    if traverse(v):
-                        contains_target = True
-                        
-                # If the target is in this branch, check if this node is a valid post wrapper
-                if contains_target:
-                    is_valid = any(key in node for key in ["message", "feedback", "comments", "reaction_count", "comment_count"])
-                    if not is_valid and node.get("__typename") in ["Story", "Video", "CometReelsVideo", "Reel", "CometShowcaseVideo"]:
-                        is_valid = True
-                        
-                    if is_valid:
-                        valid_nodes.append(node)
-                
-                return contains_target
-                
-            elif isinstance(node, list):
-                contains_target = False
-                for item in node:
-                    if traverse(item):
-                        contains_target = True
-                return contains_target
-                
-            elif isinstance(node, str) and str(media_id) in node:
-                return True
-            elif isinstance(node, (int, float)) and str(node) == str(media_id):
-                return True
-                
-            return False
-
-        traverse(obj)
-        return valid_nodes[-1] if valid_nodes else obj
-
-    @staticmethod
-    def get_clean_text(html_text, soup, owner_name="", media_id=None):
-        """Extracts text strictly from the backend data APIs, ignoring the visual UI completely."""
-        og_title = ExtractorHelper.get_meta(soup, "og:title") or ""
-        og_desc = ExtractorHelper.get_meta(soup, "og:description") or ""
-
-        caption, description = None, None
-
-        if og_title:
-            if "views" in og_title and "|" in og_title:
-                parts = [p.strip() for p in og_title.split("|")]
-                if len(parts) >= 3:
-                    caption = " | ".join(parts[1:-1])
-                elif len(parts) == 2:
-                    caption = parts[1]
-            else:
-                caption = og_title
-
-        description = og_desc
-
-        if ExtractorHelper.is_auto_generated(caption, owner_name): caption = None
-        if ExtractorHelper.is_auto_generated(description, owner_name): description = None
-        
-        # Strictly scoped to the isolated post node
-        if not caption or not description:
-            for script in soup.find_all("script", type=["application/json"]):
-                text = script.string
-                if not text or (media_id and media_id not in text): continue
-                
-                try:
-                    data = json.loads(text)
-                    target_node = ExtractorHelper.isolate_post_node(data, media_id)
-                    
-                    def hunt_text(obj):
-                        nonlocal caption, description
-                        if isinstance(obj, dict):
-                            if "title" in obj and isinstance(obj["title"], dict) and "text" in obj["title"]:
-                                t = obj["title"]["text"]
-                                if not caption and not ExtractorHelper.is_auto_generated(t, owner_name): caption = t
-                            if "message" in obj and isinstance(obj["message"], dict) and "text" in obj["message"]:
-                                d = obj["message"]["text"]
-                                if not description and not ExtractorHelper.is_auto_generated(d, owner_name): description = d
-                            for v in obj.values(): hunt_text(v)
-                        elif isinstance(obj, list):
-                            for item in obj: hunt_text(item)
-                            
-                    hunt_text(target_node)
-                    if caption or description: break
-                except Exception: continue
-
-        return caption or "", description or ""
-
-    @staticmethod
     def extract_text_blocks(soup, exclude_strings=None):
-        """The Semantic Hunter: Reads DOM architecture instead of brittle regex tags."""
         valid_blocks = []
         exclusions = [x.lower() for x in (exclude_strings or []) if x and isinstance(x, str)]
         main_area = soup.find(attrs={"role": "main"}) or soup
         
         for el in main_area.find_all(['h1', 'h2', 'span', 'div']):
             if el.name not in ['h1', 'h2'] and el.get('dir') != 'auto': continue
-                
+            
             text = el.get_text(separator=" ", strip=True)
             text_lower = text.lower()
             
             if len(text) < 4: continue
             if re.match(r'^\d+[mhdw]$', text_lower): continue 
-            
-            # Rejects timestamp lines (e.g. "1 Dec 2020 · Public")
             if ('·' in text or '•' in text) and len(text) < 60: continue
             
-            # Strict Metric Stripper
             clean_str = re.sub(r'^[\d,.]+[a-z]*\s*(comments?|reactions?|likes?|shares?|views?|plays?)$', '', text_lower).strip()
             if not clean_str: continue
             
@@ -174,17 +79,15 @@ class ExtractorHelper:
                     aria = p.get('aria-label', '').lower()
                     tag_name = p.name.lower()
                     
-                    # SEMANTIC UI FILTER
                     if role in ['button', 'link', 'navigation', 'tab', 'toolbar', 'dialog', 'textbox', 'search', 'form', 'combobox', 'menu', 'banner'] or tag_name in ['a', 'button', 'nav', 'form', 'input', 'textarea']:
                         is_ui_or_comment = True
                         break
                     
-                    # SEMANTIC COMMENT FILTER
                     if role == 'article' or aria.startswith('comment from') or aria == 'comment':
                         is_ui_or_comment = True
                         break
                         
-                    if role in ['main', 'complementary']: break
+                    if role in ['main', 'complementary', 'dialog']: break
                     p = p.parent
                 else: break
             
@@ -194,198 +97,562 @@ class ExtractorHelper:
         return valid_blocks
 
     @staticmethod
-    def get_metrics(soup, html, media_id=None):
-        """The Enterprise Metric Scraper: Bulletproofed against the Infinite Scroll Bleed."""
-        likes, comments = None, None
+    def get_facebook_ids(url, html):
+        # Use ordered lists per priority tier to preserve ranking
+        tier1 = []  # direct post/story numeric IDs from JSON (most reliable)
+        tier2 = []  # pfbid / storyID (URL or JSON encoded)
+        tier3 = []  # numeric IDs decoded from Base64 storyIDs (least reliable — may include owner ID)
         
-        if media_id:
+        # 1. Grab the ID or pfbid directly from the URL parameters
+        shortcode_match = re.search(r'(pfbid[a-zA-Z0-9]+)', url) or re.search(r'/(\d+)/?$', url)
+        if shortcode_match:
+            val = shortcode_match.group(1)
+            (tier1 if re.match(r'^\d{10,}$', val) else tier2).append(val)
+            
+        from urllib.parse import urlparse, parse_qs
+        qs = parse_qs(urlparse(url).query)
+        for param in ["story_fbid", "fbid", "v"]:
+            if qs.get(param): tier1.append(qs.get(param)[0])
+        if qs.get("set"): 
+            set_match = re.search(r'a\.(\d+)', qs.get("set")[0])
+            if set_match: tier1.append(set_match.group(1))
+            
+        # 2. Grab the numeric IDs from tracking HTML — these are post-specific
+        for p in [r'"top_level_post_id"\s*:\s*"(\d+)"', r'"post_id"\s*:\s*"(\d+)"',
+                  r'"story_fbid"\s*:\s*\[?"(\d+)"', r'"target_id"\s*:\s*(\d+)']:
+            m = re.search(p, html)
+            if m and m.group(1) not in tier1:
+                tier1.append(m.group(1))
+
+        # 3. Collect storyIDs from the HTML → tier2 only, do NOT decode them all here.
+        # A Facebook page embeds storyIDs for the target post AND for every sidebar / recommended post. Decoding all of them flooded tier3 with foreign post IDs
+        for m in re.finditer(r'"storyID"\s*:\s*"([^"\\]+)"', html):
+            encoded_id = m.group(1)
+            if encoded_id not in tier2:
+                tier2.append(encoded_id)
+
+        url_pfbid = next((t for t in tier2 if str(t).startswith('pfbid')), None)
+        if url_pfbid:
+            try:
+                import base64
+                padding = "=" * ((4 - len(url_pfbid) % 4) % 4)
+                decoded = base64.b64decode(url_pfbid + padding).decode('utf-8', errors='ignore')
+                for num in re.findall(r'\d{10,}', decoded):
+                    if num not in tier1 and num not in tier3:
+                        tier3.append(num)
+            except Exception:
+                pass
+                
+        seen = set()
+        result = []
+        for tid in tier1 + tier2 + tier3:
+            if tid not in seen:
+                seen.add(tid)
+                result.append(tid)
+        return result
+
+    @staticmethod
+    def pick_best_media_id(target_ids):
+        if not target_ids:
+            return "UNKNOWN_ID"
+        # First preference: pure numeric IDs — these come first in the ordered list
+        for tid in target_ids:
+            if re.match(r'^\d{10,}$', str(tid)):
+                return str(tid)
+        # Second preference: Base64-encoded IDs (UzpfS...)
+        for tid in target_ids:
+            if str(tid).startswith('Uzpf'):
+                return str(tid)
+        # Fallback: first ID
+        return str(target_ids[0])
+
+    @staticmethod
+    def get_search_area(soup):
+        dialog = soup.find(attrs={"role": "dialog"})
+        if dialog: return dialog
+        
+        main = soup.find(attrs={"role": "main"})
+        if main: return main
+        
+        return soup
+
+    @staticmethod
+    def isolate_post_node(obj, target_ids):
+        import base64 as _b64
+        valid_targets = [str(tid) for tid in target_ids if tid]
+        if not valid_targets: return {}
+        
+        # Each entry: (direct_score, node)
+        # direct_score 2 = a target ID exactly equals this node's own id/post_id/legacy_fbid
+        # direct_score 1 = substring or decoded-B64 match on this node's own id field
+        # direct_score 0 = target found only inside a descendant, not on this node itself
+        scored_nodes = []
+        
+        def _decode_b64_id(node_id):
+            if not node_id or len(node_id) < 8: return []
+            try:
+                padding = "=" * ((4 - len(node_id) % 4) % 4)
+                decoded = _b64.b64decode(node_id + padding).decode('utf-8', errors='ignore')
+                return re.findall(r'\d{10,}', decoded)
+            except Exception:
+                return []
+        
+        def traverse(node):
+            if isinstance(node, dict):
+                node_id = str(node.get("id", ""))
+                node_post_id = str(node.get("post_id", ""))
+                node_legacy_id = str(node.get("legacy_fbid", ""))
+                
+                # Score this node's OWN identity fields — not its children.
+                direct_score = 0
+                for t in valid_targets:
+                    if t and (t == node_id or t == node_post_id or t == node_legacy_id):
+                        direct_score = 2
+                        break
+                if not direct_score:
+                    for t in valid_targets:
+                        if t and (t in node_id or t in node_post_id or t in node_legacy_id):
+                            direct_score = 1
+                            break
+                if not direct_score and node_id:
+                    for num in _decode_b64_id(node_id):
+                        if any(t == num for t in valid_targets):
+                            direct_score = 1
+                            break
+                
+                child_has_target = False
+                for k, v in node.items():
+                    if traverse(v):
+                        child_has_target = True
+                        
+                contains_target = bool(direct_score) or child_has_target
+                
+                if contains_target:
+                    is_valid = any(key in node for key in [
+                        "message", "feedback", "comments", "reaction_count", "comment_count",
+                        "likers", "unified_reactors", "total_comment_count"
+                    ])
+                    if not is_valid and node.get("__typename") in ["Story", "Video", "CometReelsVideo", "Reel", "CometShowcaseVideo"]:
+                        is_valid = True
+                        
+                    if is_valid:
+                        scored_nodes.append((direct_score, node))
+                
+                return contains_target
+                
+            elif isinstance(node, list):
+                child_has_target = False
+                for item in node:
+                    if traverse(item): child_has_target = True
+                return child_has_target
+                
+            elif isinstance(node, str) and any(t in node for t in valid_targets):
+                return True
+            elif isinstance(node, (int, float)) and any(str(node) == t for t in valid_targets):
+                return True
+                
+            return False
+
+        traverse(obj)
+        if not scored_nodes:
+            return {}
+        # Prefer the highest-scored node (direct ID match beats inherited).
+        # Among ties, take the last one in traversal order (deepest = most specific subtree).
+        best_score = max(s for s, _ in scored_nodes)
+        best_nodes = [n for s, n in scored_nodes if s == best_score]
+        return best_nodes[-1]
+
+    @staticmethod
+    def get_clean_text(html_text, soup, owner_name="", target_ids=None):
+        og_title = ExtractorHelper.get_meta(soup, "og:title") or ""
+        og_desc = ExtractorHelper.get_meta(soup, "og:description") or ""
+
+        caption, description = None, None
+
+        if og_title:
+            if "views" in og_title and "|" in og_title:
+                parts = [p.strip() for p in og_title.split("|")]
+                if len(parts) >= 3: caption = " | ".join(parts[1:-1])
+                elif len(parts) == 2: caption = parts[1]
+            elif "|" in og_title:
+                parts = [p.strip() for p in og_title.split("|")]
+                candidate = parts[0] if len(parts) >= 2 else og_title
+                if candidate and candidate.lower() != (owner_name or "").lower():
+                    caption = candidate
+            elif og_title and og_title.strip().lower() != (owner_name or "").lower():
+                caption = og_title
+
+        og_desc_truncated = og_desc.rstrip().endswith("...")
+        description = og_desc if not og_desc_truncated else None
+
+        if ExtractorHelper.is_auto_generated(caption, owner_name): caption = None
+        if ExtractorHelper.is_auto_generated(description, owner_name): description = None
+        
+        valid_targets = target_ids or []
+        
+        # Always search JSON for description if: we have no description, OR og:description was truncated
+        needs_json_desc = (not description) or og_desc_truncated
+        if (not caption or needs_json_desc) and valid_targets:
+            def hunt_text(obj):
+                nonlocal caption, description
+                if isinstance(obj, dict):
+                    if "title" in obj and isinstance(obj["title"], dict) and "text" in obj["title"]:
+                        t = obj["title"]["text"]
+                        if not caption and not ExtractorHelper.is_auto_generated(t, owner_name): caption = t
+                    if "message" in obj and isinstance(obj["message"], dict) and "text" in obj["message"]:
+                        d = obj["message"]["text"]
+                        # Prefer JSON message: it's full text, whereas og:desc may be truncated
+                        if d and not ExtractorHelper.is_auto_generated(d, owner_name):
+                            if needs_json_desc or not description:
+                                description = d
+                    for v in obj.values(): hunt_text(v)
+                elif isinstance(obj, list):
+                    for item in obj: hunt_text(item)
+
             for script in soup.find_all("script", type=["application/json"]):
                 text = script.string
-                if not text or media_id not in text: continue
+                if not text or not any(t in text for t in valid_targets): continue
                 try:
                     data = json.loads(text)
-                    target_node = ExtractorHelper.isolate_post_node(data, media_id)
-                        
-                    def hunt_metrics(obj):
-                        nonlocal likes, comments
-                        if isinstance(obj, dict):
-                            if likes is None:
-                                if "reaction_count" in obj and isinstance(obj["reaction_count"], dict):
-                                    likes = ExtractorHelper.parse_int(str(obj["reaction_count"].get("count", "")))
-                                elif "i18n_reaction_count" in obj:
-                                    likes = ExtractorHelper.parse_int(str(obj["i18n_reaction_count"]))
-                                    
-                            if comments is None:
-                                if "comment_count" in obj and isinstance(obj["comment_count"], dict):
-                                    comments = ExtractorHelper.parse_int(str(obj["comment_count"].get("total_count", "")))
-                                elif "total_comment_count" in obj:
-                                    comments = ExtractorHelper.parse_int(str(obj["total_comment_count"]))
-                                elif "i18n_comment_count" in obj:
-                                    comments = ExtractorHelper.parse_int(str(obj["i18n_comment_count"]))
-                                    
-                            for v in obj.values(): hunt_metrics(v)
-                        elif isinstance(obj, list):
-                            for item in obj: hunt_metrics(item)
-                            
-                    hunt_metrics(target_node)
-                    if likes is not None and comments is not None: break
+                    target_node = ExtractorHelper.isolate_post_node(data, valid_targets)
+                    hunt_text(target_node)
+                    if caption and description: break
                 except Exception: continue
 
-        if likes is None or comments is None:
-            main_area = soup.find(attrs={"role": "main"})
-            if main_area:
-                main_html = str(main_area)
-                
-                if comments is None:
-                    c_match = re.search(r'aria-label="([\d,.]+[a-zA-Z]*)\s*comments?"', main_html, re.I) or \
-                              re.search(r'>([\d,.]+[a-zA-Z]*)\s*comments?<', main_html, re.I)
-                    if c_match: comments = ExtractorHelper.parse_int(c_match.group(1))
-                    
-                if likes is None:
-                    l_match = re.search(r'aria-label="([\d,.]+[a-zA-Z]*)\s*likes?"', main_html, re.I) or \
-                              re.search(r'aria-label="([\d,.]+[a-zA-Z]*)\s*reactions?"', main_html, re.I) or \
-                              re.search(r'>([\d,.]+[a-zA-Z]*)\s*likes?<', main_html, re.I)
-                    if l_match: 
-                        likes = ExtractorHelper.parse_int(l_match.group(1))
-                    else:
-                        backup_likes = re.findall(r'>([\d]+[.,]?[\d]*[KkMmTtLlCcRr]+)<', main_html)
-                        if backup_likes:
-                            likes = ExtractorHelper.parse_int(backup_likes[0])
+        # Final fallback: if JSON search didn't find description, use truncated og:description
+        if not description and og_desc and not ExtractorHelper.is_auto_generated(og_desc, owner_name):
+            description = og_desc
 
-        if likes is None:
+        return caption or "", description or ""
+
+    @staticmethod
+    def get_metrics(soup, html, target_ids=None):
+        likes, comments = None, None
+        valid_targets = target_ids or []
+
+        def hunt_metrics(obj, primary_only=False):
+            nonlocal likes, comments
+            if isinstance(obj, dict):
+                if likes is None:
+                    if "reaction_count" in obj and isinstance(obj["reaction_count"], dict):
+                        likes = ExtractorHelper.parse_int(str(obj["reaction_count"].get("count", "")))
+                    elif "i18n_reaction_count" in obj:
+                        likes = ExtractorHelper.parse_int(str(obj["i18n_reaction_count"]))
+                    elif not primary_only:
+                        if "likers" in obj and isinstance(obj["likers"], dict):
+                            likes = ExtractorHelper.parse_int(str(obj["likers"].get("count", "")))
+                        elif "unified_reactors" in obj and isinstance(obj["unified_reactors"], dict):
+                            likes = ExtractorHelper.parse_int(str(obj["unified_reactors"].get("count", "")))
+
+                if comments is None:
+                    if "comment_count" in obj and isinstance(obj["comment_count"], dict):
+                        comments = ExtractorHelper.parse_int(str(obj["comment_count"].get("total_count", "")))
+                    elif "comments" in obj and isinstance(obj["comments"], dict):
+                        comments = ExtractorHelper.parse_int(str(obj["comments"].get("total_count", "")))
+                    elif "i18n_comment_count" in obj:
+                        comments = ExtractorHelper.parse_int(str(obj["i18n_comment_count"]))
+                    elif not primary_only:
+                        if "total_comment_count" in obj:
+                            comments = ExtractorHelper.parse_int(str(obj["total_comment_count"]))
+                        elif "feedback" in obj and isinstance(obj["feedback"], dict):
+                            tc = obj["feedback"].get("total_comment_count")
+                            if tc is not None:
+                                comments = ExtractorHelper.parse_int(str(tc))
+
+                for v in obj.values(): hunt_metrics(v, primary_only)
+            elif isinstance(obj, list):
+                for item in obj: hunt_metrics(item, primary_only)
+
+        isolated_node = {}
+        if valid_targets:
+            for script in soup.find_all("script", type=["application/json"]):
+                text = script.string
+                if not text or not any(t in text for t in valid_targets): continue
+                try:
+                    data = json.loads(text)
+                    target_node = ExtractorHelper.isolate_post_node(data, valid_targets)
+                    if target_node: isolated_node = target_node 
+                    hunt_metrics(target_node, primary_only=True)
+                    if likes is not None and likes > 0 and comments is not None: break
+                except Exception: continue
+
+        needs_likes = likes is None or likes == 0
+        needs_comments = comments is None or comments == 0
+        if (needs_likes or needs_comments) and isolated_node:
+            old_l, old_c = likes, comments
+            if needs_likes: likes = None
+            if needs_comments: comments = None
+            hunt_metrics(isolated_node, primary_only=False)
+            if needs_likes and (likes is None or likes == 0): likes = old_l
+            if needs_comments and (comments is None or comments == 0): comments = old_c
+
+        needs_likes = likes is None or likes == 0
+        needs_comments = comments is None or comments == 0
+        if (needs_likes or needs_comments) and valid_targets:
+            for script in soup.find_all("script", type=["application/json"]):
+                text = script.string
+                if not text or not any(t in text for t in valid_targets): continue
+                try:
+                    data = json.loads(text)
+                    old_likes, old_comments = likes, comments
+                    if needs_likes: likes = None
+                    if needs_comments: comments = None
+                    hunt_metrics(data, primary_only=True)
+                    if needs_likes and (likes is None or likes == 0): likes = old_likes
+                    if needs_comments and (comments is None or comments == 0): comments = old_comments
+                    needs_likes = likes is None or likes == 0
+                    needs_comments = comments is None or comments == 0
+                    if not needs_likes and not needs_comments: break
+                except Exception: continue
+
+        needs_likes = likes is None or likes == 0
+        needs_comments = comments is None or comments == 0
+        if (needs_likes or needs_comments) and valid_targets:
+            for script in soup.find_all("script", type=["application/json"]):
+                text = script.string
+                if not text or not any(t in text for t in valid_targets): continue
+                try:
+                    data = json.loads(text)
+                    old_likes, old_comments = likes, comments
+                    if needs_likes: likes = None
+                    if needs_comments: comments = None
+                    hunt_metrics(data, primary_only=False)
+                    if needs_likes and (likes is None or likes == 0): likes = old_likes
+                    if needs_comments and (comments is None or comments == 0): comments = old_comments
+                    needs_likes = likes is None or likes == 0
+                    needs_comments = comments is None or comments == 0
+                    if not needs_likes and not needs_comments: break
+                except Exception: continue
+
+        if likes is None or likes == 0:
             likes = ExtractorHelper.get_primary_metric([
                 r'aria-label="([\d,.]+[a-zA-Z]*)\s*likes?"',
                 r'aria-label="([\d,.]+[a-zA-Z]*)\s*reactions?"',
                 r'"reaction_count"\s*:\s*\{\s*"count"\s*:\s*(\d+)',
-                r'"reactions"\s*:\s*\{\s*"total_count"\s*:\s*(\d+)',
-                r'"i18n_reaction_count"\s*:\s*"([\d,.]+[a-zA-Z]*)"', 
-                r'"total_reaction_count"\s*:\s*(\d+)'
+                r'"i18n_reaction_count"\s*:\s*"([\d,.]+[a-zA-Z]*)"',
+                r'"likers"\s*:\s*\{\s*"count"\s*:\s*(\d+)',
+                r'"unified_reactors"\s*:\s*\{\s*"count"\s*:\s*(\d+)'
             ], html)
-            
-        if comments is None:
+
+        if comments is None or comments == 0:
             comments = ExtractorHelper.get_primary_metric([
                 r'aria-label="([\d,.]+[a-zA-Z]*)\s*comments?"',
                 r'"comment_count"\s*:\s*\{\s*"total_count"\s*:\s*(\d+)',
-                r'"comments"\s*:\s*\{\s*"total_count"\s*:\s*(\d+)',
-                r'"i18n_comment_count"\s*:\s*"([\d,.]+[a-zA-Z]*)"', 
+                r'"i18n_comment_count"\s*:\s*"([\d,.]+[a-zA-Z]*)"',
                 r'"total_comment_count"\s*:\s*(\d+)'
             ], html)
-            
+
         return likes, comments
 
     @staticmethod
-    def extract_comments(html_text, media_id=None, limit=6):
+    def extract_comments(html_text, target_ids=None, limit=6):
         extracted = []        
         soup = BeautifulSoup(html_text, 'html.parser')
+        valid_targets = target_ids or []
+
+        if not valid_targets: return extracted
+
+        def hunt(obj):
+            if isinstance(obj, dict):
+                if obj.get("__typename") == "Comment":
+                    body = obj.get("body", {})                    
+                    txt = body.get("text") if isinstance(body, dict) else (body if isinstance(body, str) else None)
+                    if txt and txt not in extracted: extracted.append(txt)
+                for v in obj.values(): hunt(v)
+            elif isinstance(obj, list):
+                for item in obj: hunt(item)
+
         for script in soup.find_all("script", type=["application/json"]):
             text = script.string
-            if not text or (media_id and media_id not in text): continue
-            
+            if not text or not any(t in text for t in valid_targets): continue
             try:
                 data = json.loads(text)
-                target_node = ExtractorHelper.isolate_post_node(data, media_id)
-                        
-                def hunt(obj):
-                    if isinstance(obj, dict):
-                        if obj.get("__typename") == "Comment":
-                            body = obj.get("body", {})                    
-                            txt = body.get("text") if isinstance(body, dict) else (body if isinstance(body, str) else None)
-                            if txt and txt not in extracted: extracted.append(txt)
-                        for v in obj.values(): hunt(v)
-                    elif isinstance(obj, list):
-                        for item in obj: hunt(item)
-                        
+                target_node = ExtractorHelper.isolate_post_node(data, valid_targets)
                 hunt(target_node)
-                if len(extracted) > 0: break
+                if len(extracted) >= limit: break
             except Exception: continue
-            
+
         return extracted[:limit]
 
     @staticmethod
-    def get_media_elements(html, soup, is_video, media_id=None):
+    def get_media_elements(html, soup, is_video, target_ids=None):
         video_url = ExtractorHelper.get_meta(soup, "og:video") or ExtractorHelper.get_meta(soup, "og:video:url")
-        thumbnail_url = ExtractorHelper.get_meta(soup, "og:image")
+        thumbnail_url = None
+        valid_targets = target_ids or []
+        search_area = ExtractorHelper.get_search_area(soup)
 
-        if is_video:
+        if valid_targets:
             for script in soup.find_all("script", type=["application/json"]):
                 text = script.string
-                if text and ("browser_native" in text or "playable_url" in text):
-                    # Look for HD first, then SD, then generic
-                    for key in ['browser_native_hd_url', 'playable_url_quality_hd', 'browser_native_sd_url', 'playable_url']:
-                        m = re.search(rf'"{key}"\s*:\s*"([^"]+)"', text)
-                        if m:
-                            try: candidate = json.loads(f'"{m.group(1)}"')
-                            except: candidate = m.group(1).replace('\\/', '/')
-                            # Strict Verification: Accept authentic media CDNs, explicitly reject static UI assets
-                            if ('fbcdn' in candidate or 'akamai' in candidate) and 'static.xx' not in candidate and 'emoji.php' not in candidate:
-                                video_url = candidate
-                                break
-                    if video_url: break
-            
-            if not video_url:
-                keys = ['browser_native_hd_url', 'playable_url_quality_hd', 'browser_native_sd_url', 'playable_url']
-                for key in keys:
-                    if video_url: break
-                    matches = re.findall(rf'{key}[\\"]*\s*:\s*[\\"]*(https:[^"\'<>\s]+)', html)
-                    for match in matches:
-                        clean_url = match.replace('\\/', '/').replace('\\\\', '')
-                        clean_url = clean_url.replace('\\u0025', '%').replace('\\u0026', '&')
-                        if ('fbcdn' in clean_url or 'akamai' in clean_url) and 'static.xx' not in clean_url and 'emoji.php' not in clean_url:
-                            video_url = clean_url
-                            break
-            
-            # Strictly block blob URLs so that downloader doesn't crash
-            video_tag = soup.find('video')
+                if not text or not any(t in text for t in valid_targets): continue
+                try:
+                    data = json.loads(text)
+                    target_node = ExtractorHelper.isolate_post_node(data, valid_targets)
+                    
+                    def hunt_media(obj):
+                        nonlocal video_url, thumbnail_url
+                        if isinstance(obj, dict):
+                            if not thumbnail_url and "photo_image" in obj and isinstance(obj["photo_image"], dict) and "uri" in obj["photo_image"]:
+                                thumbnail_url = obj["photo_image"]["uri"]
+                            if not thumbnail_url and "image" in obj and isinstance(obj["image"], dict) and "uri" in obj["image"]:
+                                thumbnail_url = obj["image"]["uri"]
+                            if is_video and not video_url:
+                                for k in ['browser_native_hd_url', 'playable_url_quality_hd', 'browser_native_sd_url', 'playable_url']:
+                                    if k in obj and obj[k]:
+                                        video_url = obj[k]
+                                        break
+                            for v in obj.values(): hunt_media(v)
+                        elif isinstance(obj, list):
+                            for item in obj: hunt_media(item)
+                            
+                    hunt_media(target_node)
+                    if thumbnail_url or video_url: break
+                except Exception: continue
+
+        if is_video and not video_url:
+            keys = ['browser_native_hd_url', 'playable_url_quality_hd', 'browser_native_sd_url', 'playable_url']
+            for key in keys:
+                if video_url: break
+                matches = re.findall(rf'{key}[\\"]*\s*:\s*[\\"]*(https:[^"\'<>\s]+)', html)
+                for match in matches:
+                    clean_url = match.replace('\\/', '/').replace('\\\\', '')
+                    if ('fbcdn' in clean_url or 'akamai' in clean_url) and 'static.xx' not in clean_url and 'emoji.php' not in clean_url:
+                        video_url = clean_url
+                        break
+
+        if not thumbnail_url:
+            feed_img = search_area.find('img', attrs={'data-imgperflogname': 'feedImage'})
+            if feed_img: thumbnail_url = feed_img.get('src')
+
+        if is_video and not video_url:
+            video_tag = search_area.find('video')
             if video_tag:
                 temp_src = video_tag.get('src')
                 if temp_src and not temp_src.startswith('blob:'):
                     if not video_url: video_url = temp_src
                 if not thumbnail_url: thumbnail_url = video_tag.get('poster')
 
-        # Clean up the Thumbnail (The Emoji/Static Trap Fix)
-        if not thumbnail_url or "fbcdn" not in thumbnail_url or "emoji.php" in thumbnail_url or "static.xx" in thumbnail_url:
-            for img in soup.find_all('img', src=re.compile(r'fbcdn\.net')):
-                src = img.get('src')
-                if src and 'pico' not in src and '16x16' not in src and '32x32' not in src and 'emoji.php' not in src and 'static.xx' not in src:
-                    thumbnail_url = src
-                    break
-        
+        if not thumbnail_url:
+            og_img = ExtractorHelper.get_meta(soup, "og:image") or ""
+            if og_img and 't1.30497' not in og_img and 'emoji.php' not in og_img and 'static.xx' not in og_img:
+                thumbnail_url = og_img
+
         return video_url, thumbnail_url
 
     @staticmethod
-    def get_post_context(html):
+    def get_post_context(soup, html, target_ids=None):
         posted_at_unix = None
-        for ts_pat in [r'"publish_time"\s*:\s*(\d{10})', r'"creation_time"\s*:\s*(\d{10})', r'"story_publish_time"\s*:\s*(\d{10})', r'data-utime="(\d{10})"']:
-            m = re.search(ts_pat, html)
-            if m:
-                posted_at_unix = int(m.group(1))
-                break
-        
         location = None
-        for loc_pat in [r'"place"\s*:\s*\{[^{}]*?"name"\s*:\s*"([^"]+)"', r'"checkin_info"\s*:\s*\{[^{}]*?"name"\s*:\s*"([^"]+)"']:
-            m = re.search(loc_pat, html, re.DOTALL)
-            if m:
-                try: location = json.loads(f'"{m.group(1)}"')
-                except: location = m.group(1)
-                break
-                
         sidecar_count = 0
-        for sc_pat in [r'"subattachments"\s*:\s*\{[^{}]*?"count"\s*:\s*(\d+)', r'"album"\s*:\s*\{[^{}]*?"media_count"\s*:\s*(\d+)']:
-            m = re.search(sc_pat, html)
-            if m:
-                sidecar_count = int(m.group(1))
-                break
+        is_pinned = False
+        valid_targets = target_ids or []
+
+        def hunt_context(obj):
+            nonlocal posted_at_unix, location, sidecar_count, is_pinned
+            if isinstance(obj, dict):
+                if not posted_at_unix:
+                    for key in ["publish_time", "creation_time", "story_publish_time"]:
+                        if key in obj and isinstance(obj[key], (int, float)):
+                            posted_at_unix = int(obj[key])
+                            break
+                if not location:
+                    if "place" in obj and isinstance(obj["place"], dict) and "name" in obj["place"]:
+                        location = obj["place"]["name"]
+                    elif "checkin_info" in obj and isinstance(obj["checkin_info"], dict) and "name" in obj["checkin_info"]:
+                        location = obj["checkin_info"]["name"]
+                if not sidecar_count:
+                    if "subattachments" in obj and isinstance(obj["subattachments"], dict):
+                        sidecar_count = int(obj["subattachments"].get("count", 0))
+                    elif "album" in obj and isinstance(obj["album"], dict):
+                        sidecar_count = int(obj["album"].get("media_count", 0))
+                if not is_pinned and "is_pinned" in obj:
+                    is_pinned = bool(obj["is_pinned"])
+                
+                for v in obj.values(): hunt_context(v)
+            elif isinstance(obj, list):
+                for item in obj: hunt_context(item)
+
+        if valid_targets:
+            for script in soup.find_all("script", type=["application/json"]):
+                text = script.string
+                if not text or not any(t in text for t in valid_targets): continue
+                try:
+                    data = json.loads(text)
+                    target_node = ExtractorHelper.isolate_post_node(data, valid_targets)
+                    hunt_context(target_node)
+                    if posted_at_unix: break
+                except Exception: continue
 
         return {
             "posted_at_unix": posted_at_unix,
             "posted_at_utc": datetime.fromtimestamp(posted_at_unix, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") if posted_at_unix else None,
             "location": location,
             "sidecar_count": sidecar_count,
-            "is_pinned": bool(re.search(r'"is_pinned"\s*:\s*true', html, re.IGNORECASE))
+            "is_pinned": is_pinned or bool(re.search(r'"is_pinned"\s*:\s*true', html, re.IGNORECASE))
         }
 
-def parse_profile_page(html, soup, url, category, index, input_name=""):
+    @staticmethod
+    def get_accessibility_caption(soup, html, thumbnail_url=None, target_ids=None):
+        search_area = ExtractorHelper.get_search_area(soup)
+        valid_targets = target_ids or []
+        
+        if thumbnail_url:
+            for img in search_area.find_all('img'):
+                src = img.get('src', '')
+                alt = img.get('alt', '')
+                if alt and src == thumbnail_url: return alt
+                if alt and ('fbcdn' in src or 'akamai' in src) and 't1.30497' not in src and 'static.xx' not in src and 'emoji.php' not in src:
+                    clean_thumb = thumbnail_url.split('?')[0].split('/')[-1]
+                    clean_src  = src.split('?')[0].split('/')[-1]
+                    if clean_thumb and clean_thumb == clean_src: return alt
+
+        if valid_targets:
+            for script in soup.find_all("script", type=["application/json"]):
+                text = script.string
+                if not text or "accessibility_caption" not in text: continue
+                if not any(t in text for t in valid_targets): continue
+                try:
+                    data = json.loads(text)
+                    def find_acc_cap(obj, depth=0):
+                        if depth > 40: return None
+                        if isinstance(obj, dict):
+                            if obj.get("accessibility_caption") and isinstance(obj["accessibility_caption"], str):
+                                return obj["accessibility_caption"]
+                            for v in obj.values():
+                                r = find_acc_cap(v, depth + 1)
+                                if r: return r
+                        elif isinstance(obj, list):
+                            for item in obj:
+                                r = find_acc_cap(item, depth + 1)
+                                if r: return r
+                        return None
+                    cap = find_acc_cap(data)
+                    if cap: return cap
+                except Exception: continue
+
+        return None
+
+    @staticmethod
+    def get_hashtags(caption, description, soup):
+        text_source = str(description or caption or "")
+        tags = re.findall(r"#(\w+)", text_source)
+        if not tags:
+            seen = set()
+            search_area = ExtractorHelper.get_search_area(soup)
+            for a in search_area.find_all("a", href=re.compile(r"facebook\.com/hashtag/")):
+                tag_text = a.get_text(strip=True).lstrip("#")
+                if tag_text and tag_text not in seen:
+                    tags.append(tag_text)
+                    seen.add(tag_text)
+        return tags
+
+def parse_page(html, soup, url, category, index, input_name=""):
+    import html as _html
     main_area = soup.find(attrs={"role": "main"}) or soup
+    
+    # Strip URL cleanly to get the exact username or ID
+    raw_username = url.split('facebook.com/')[-1].split('?')[0].strip('/')
+    page_username = raw_username.split('/')[0] if raw_username else ""
     
     full_name = ExtractorHelper.get_meta(soup, "og:title")
     if not full_name:
@@ -406,49 +673,147 @@ def parse_profile_page(html, soup, url, category, index, input_name=""):
     ], html)
 
     pic_url = None
-    for img_tag in main_area.find_all('image'):
-        href = img_tag.get('xlink:href') or img_tag.get('href')
-        if href and 'fbcdn' in href:
-            if '40x40' not in href and 'pico' not in href:
-                pic_url = href
-                break
-                
-    if not pic_url:
-        pic_url = ExtractorHelper.get_meta(soup, "og:image")
-        
-    if pic_url:
-        pic_url = re.sub(r's\d+x\d+(_tt\d+)?/', '', pic_url) 
-        pic_url = re.sub(r'p\d+x\d+/', '', pic_url)
-
     profile_category = None
-    highlighted_items = main_area.find_all(attrs={"aria-label": "Highlighted details", "role": "button"})
-    for item in highlighted_items:
-        cat_text = item.get_text(separator=" ", strip=True)
-        if cat_text and len(cat_text) <= 40 and not re.search(r'lives in|from|followed by|people|\d', cat_text, re.I):
-            profile_category = cat_text.split("·")[-1].strip() if "·" in cat_text else cat_text
-            break
-            
-    if not profile_category:
-        known_categories = {
-            "digital creator", "tv programme", "gaming video creator", "page", "public figure", 
-            "video creator", "comedian", "actor", "entertainment website", 
-            "musician", "band", "personal blog", "product", "service", "artist", 
-            "entrepreneur", "creator", "media", "news company", "brand"
-        }
-        for el in main_area.find_all(['span', 'div', 'a'], attrs={'role': ['button', 'link']}):
-            text = el.get_text(separator=" ", strip=True)
-            if text.lower() in known_categories:
-                profile_category = text.title()
-                break
+    full_name_json = None
+    cover_photo_url = None
+    member_count_text = None
+
+    # Walk JSON scripts for structured profile data 
+    for script in soup.find_all("script", type=["application/json"]):
+        text = script.string
+        if not text: continue
+        
+        if "profile_picture" in text or "cover_photo" in text \
+                or "group_member_profiles" in text or "category_name" in text \
+                or "overall_category_name" in text:
+            try:
+                data = json.loads(text)
+                
+                def _hunt_profile_data(obj, depth=0):
+                    nonlocal pic_url, profile_category, full_name_json, cover_photo_url, member_count_text
+                    if depth > 40: return
+                    if isinstance(obj, dict):
+                        node_id = str(obj.get("id", ""))
+                        node_uname = str(obj.get("username", ""))
+                        
+                        # Match node to URL's page identifier
+                        is_target = page_username and page_username in (node_id, node_uname)
+                        
+                        if is_target:
+                            if not full_name_json and obj.get("name"):
+                                full_name_json = obj["name"]
+                            
+                            # Profile picture URI (usually tiny s50x50 — upgraded later)
+                            if not pic_url and "profile_picture" in obj \
+                                    and isinstance(obj["profile_picture"], dict):
+                                uri = obj["profile_picture"].get("uri")
+                                if uri and "fbcdn" in uri:
+                                    pic_url = uri
+                            
+                            # Category from multiple possible field names
+                            if not profile_category:
+                                for cat_field in ["category_name", "overall_category_name",
+                                                  "page_category", "category_display_name"]:
+                                    if obj.get(cat_field) and isinstance(obj[cat_field], str):
+                                        profile_category = obj[cat_field]
+                                        break
+                                if not profile_category and "page_categories" in obj:
+                                    cats = obj["page_categories"]
+                                    if isinstance(cats, list) and cats:
+                                        first_cat = cats[0]
+                                        if isinstance(first_cat, dict):
+                                            profile_category = first_cat.get("name") or first_cat.get("category_name")
+                                        elif isinstance(first_cat, str):
+                                            profile_category = first_cat
+                        
+                        # Cover photo (groups/pages — checked on all nodes, not just target)
+                        for key in ["cover_photo", "profile_cover_photo"]:
+                            if not cover_photo_url and key in obj and isinstance(obj[key], dict):
+                                photo = obj[key].get("photo", {})
+                                if isinstance(photo, dict):
+                                    img = photo.get("image", {})
+                                    if isinstance(img, dict) and img.get("uri"):
+                                        cover_photo_url = img["uri"]
+                                if not cover_photo_url:
+                                    img = obj[key].get("image", {})
+                                    if isinstance(img, dict) and img.get("uri"):
+                                        cover_photo_url = img["uri"]
+                        
+                        # Group member count
+                        if not member_count_text and "group_member_profiles" in obj \
+                                and isinstance(obj["group_member_profiles"], dict):
+                            fct = obj["group_member_profiles"].get("formatted_count_text")
+                            if fct:
+                                member_count_text = fct
+
+                        for v in obj.values(): _hunt_profile_data(v, depth + 1)
+                    elif isinstance(obj, list):
+                        for item in obj: _hunt_profile_data(item, depth + 1)
+
+                _hunt_profile_data(data)
+            except Exception: continue
+
+    if full_name_json and not full_name:
+        full_name = full_name_json
+
+    def _pick_best_profile_pic(json_pic_url):
+        if not json_pic_url:
+            return None
+        filename = json_pic_url.split('?')[0].split('/')[-1]
+        if not filename:
+            return None
+
+        candidates = []
+        seen_urls = set()
+
+        def _add(url):
+            if not url: return
+            url = _html.unescape(url)
+            if filename not in url or 'fbcdn' not in url: return
+            if url in seen_urls: return
+            seen_urls.add(url)
+            m = re.search(r'ctp=s(\d+)x\d+', url)
+            candidates.append((int(m.group(1)) if m else 0, url))
+
+        _add(ExtractorHelper.get_meta(soup, "og:image"))
+        for img in main_area.find_all('image'):
+            _add(img.get('xlink:href') or img.get('href', ''))
+        for img in main_area.find_all('img'):
+            _add(img.get('src', ''))
+        for m in re.finditer(
+            r'https://[^\s"\'\\]+' + re.escape(filename) + r'[^\s"\'\\]*', html
+        ):
+            _add(m.group(0))
+
+        if not candidates:
+            return json_pic_url
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        return candidates[0][1]
+
+    if pic_url:
+        pic_url = _pick_best_profile_pic(pic_url) or pic_url
+    if not pic_url:
+        og_img = ExtractorHelper.get_meta(soup, "og:image")
+        if og_img:
+            pic_url = _html.unescape(og_img)
+    if not pic_url and cover_photo_url:
+        pic_url = cover_photo_url
+    if pic_url:
+        pic_url = _html.unescape(pic_url)
 
     bio_text = ""
-    valid_blocks = ExtractorHelper.extract_text_blocks(soup, exclude_strings=[full_name, profile_category])
-    
+    NAV_LABELS = {'posts', 'about', 'friends', 'photos', 'videos', 'reels',
+                  'mentions', 'reviews', 'followers', 'following', 'groups',
+                  'events', 'more', 'intro'}
+
+    valid_blocks = ExtractorHelper.extract_text_blocks(
+        soup, exclude_strings=[full_name, profile_category] + list(NAV_LABELS)
+    )
     for block in valid_blocks:
         block_lower = block.lower()
         if re.search(r'followers?|following|likes?|verified account', block_lower): continue
         if full_name and full_name.lower() in block_lower and len(block_lower) < len(full_name) + 20: continue
-        if len(block) > 4:
+        if len(block) > 4 and block_lower not in NAV_LABELS:
             bio_text = block
             break
 
@@ -457,11 +822,33 @@ def parse_profile_page(html, soup, url, category, index, input_name=""):
         if "is on Facebook" in bio_text or "Join Facebook to connect" in bio_text:
             bio_text = ""
 
+    if bio_text:
+        bio_lower = bio_text.strip().lower()
+        if (full_name and bio_lower == full_name.strip().lower()) \
+                or (profile_category and bio_lower == profile_category.strip().lower()) \
+                or (full_name and len(bio_text.strip()) <= len(full_name.strip()) + 5 and full_name.strip().lower() in bio_lower):
+            bio_text = ""
+
+    # Remaining fallbacks
+    if follower_count is None and member_count_text:
+        follower_count = ExtractorHelper.parse_int(member_count_text.split()[0])
+
+    if not profile_category:
+        for m in re.finditer(r'"category_name"\s*:\s*"([^"]+)"', html):
+            cat_val = m.group(1)
+            if cat_val and cat_val not in ['null', 'undefined', 'GROUP', 'PERSON']:
+                profile_category = cat_val
+                break
+        if not profile_category:
+            for m in re.finditer(r'"overall_category_name"\s*:\s*"([^"]+)"', html):
+                profile_category = m.group(1)
+                break
+
     return {
         "post_index": index, "scraped_url": url, "facebook_category": category, "status": "success",
         "metadata": {
             "typename": "GraphProfile",
-            "username": url.split('facebook.com/')[-1].split('?')[0].strip('/'),
+            "username": page_username,
             "full_name": full_name or "",
             "category": profile_category,
             "follower_count": follower_count, "following_count": following_count,
@@ -471,115 +858,151 @@ def parse_profile_page(html, soup, url, category, index, input_name=""):
         }
     }
 
+
 def parse_reel(html, soup, url, category, index, input_name=""):
+    search_area = ExtractorHelper.get_search_area(soup)
+    target_ids = ExtractorHelper.get_facebook_ids(url, html)
+    
     owner = None
-    title_text = soup.title.string if soup.title else ""
-    title_parts = [p.strip() for p in title_text.replace(" | Facebook", "").replace("Facebook", "").split("-")]
-    if len(title_parts) >= 2: owner = title_parts[0]
+    profile_name_el = search_area.find(attrs={'data-ad-rendering-role': 'profile_name'})
+    if profile_name_el:
+        owner = re.sub(r'\s*verified account\s*', '', profile_name_el.get_text(separator=' ', strip=True), flags=re.I).strip() or None
 
     if not owner:
-        for a in soup.find_all('a', href=True):
-            if 'facebook.com/' in a['href'] and '/reel/' not in a['href']:
-                if a.parent.get('role') != 'button': 
-                    m = re.search(r'facebook\.com/([^/?]+)', a['href'])
-                    if m: 
-                        owner = m.group(1)
-                        break
+        h2_el = search_area.find('h2')
+        if h2_el:
+            candidate = re.sub(r'\s*verified account\s*', '', h2_el.get_text(separator=' ', strip=True), flags=re.I).strip()
+            if candidate and candidate.lower() not in ('facebook', 'reels', 'video', ''): owner = candidate
 
-    shortcode_match = re.search(r'(pfbid[a-zA-Z0-9]+)', url) or re.search(r'/(\d+)/?$', url)
-    media_id = shortcode_match.group(1) if shortcode_match else None
-                    
-    caption, description = ExtractorHelper.get_clean_text(html, soup, owner, media_id)
-    
+    if not owner and target_ids:
+        for script in soup.find_all("script", type=["application/json"]):
+            text = script.string
+            if not text or not any(t in text for t in target_ids): continue
+            try:
+                data = json.loads(text)
+                def _hunt_reel_owner(obj, depth=0):
+                    if depth > 30 or not isinstance(obj, (dict, list)): return None
+                    if isinstance(obj, dict):
+                        if obj.get('__typename') in ('User', 'Page', 'Group') and obj.get('name'): return obj['name']
+                        if 'actors' in obj and isinstance(obj['actors'], list) and obj['actors']:
+                            actor = obj['actors'][0]
+                            if isinstance(actor, dict) and actor.get('name'): return actor['name']
+                        for v in obj.values():
+                            r = _hunt_reel_owner(v, depth + 1)
+                            if r: return r
+                    elif isinstance(obj, list):
+                        for item in obj:
+                            r = _hunt_reel_owner(item, depth + 1)
+                            if r: return r
+                    return None
+                found = _hunt_reel_owner(data)
+                if found:
+                    owner = re.sub(r'\s*verified account\s*', '', found, flags=re.I).strip() or None
+                    if owner: break
+            except Exception: continue
+
+    if not owner:
+        og_title = ExtractorHelper.get_meta(soup, "og:title") or ""
+        if og_title and not re.search(r'[|·•]', og_title): owner = og_title.strip() or None
+
+    caption, description = ExtractorHelper.get_clean_text(html, soup, owner, target_ids)
     if not caption:
         valid_blocks = ExtractorHelper.extract_text_blocks(soup, exclude_strings=[owner])
-        if len(valid_blocks) > 0: 
-            caption = valid_blocks.pop(0)
+        if len(valid_blocks) > 0: caption = valid_blocks.pop(0)
+    if not caption and input_name: caption = input_name
 
-    if not caption and input_name:
-        caption = input_name
-
-    video_url, thumbnail_url = ExtractorHelper.get_media_elements(html, soup, True, media_id)
-    context = ExtractorHelper.get_post_context(html)
+    video_url, thumbnail_url = ExtractorHelper.get_media_elements(html, soup, True, target_ids)
+    accessibility_caption = ExtractorHelper.get_accessibility_caption(soup, html, thumbnail_url, target_ids)
+    context = ExtractorHelper.get_post_context(soup, html, target_ids)
+    likes, comments = ExtractorHelper.get_metrics(soup, html, target_ids)
     
-    likes, comments = ExtractorHelper.get_metrics(soup, html, media_id)
-    
-    comment_data = ExtractorHelper.extract_comments(html, media_id)
+    comment_data = ExtractorHelper.extract_comments(html, target_ids)
     if description in comment_data: comment_data.remove(description)
 
     return {
         "post_index": index, "post_url": url, "facebook_category": category, "status": "success",
         "metadata": {
-            "media_id": media_id or "UNKNOWN_ID",
-            "typename": "GraphVideo", "is_video": True,
-            "video_url": video_url, "thumbnail_url": thumbnail_url,
-            "like_count": likes,
-            "comment_count": comments,
-            "relevant_comments": comment_data,
-            "caption": caption or "", "description": description or "", "caption_hashtags": re.findall(r"#(\w+)", str(description or caption)),
-            "owner_username": owner,
-            **context,
+            "media_id": ExtractorHelper.pick_best_media_id(target_ids), "typename": "GraphVideo", "is_video": True,
+            "video_url": video_url, "thumbnail_url": thumbnail_url, "accessibility_caption": accessibility_caption,
+            "like_count": likes, "comment_count": comments, "relevant_comments": comment_data,
+            "caption": caption or "", "description": description or "", "caption_hashtags": ExtractorHelper.get_hashtags(caption, description, soup),
+            "owner_username": owner, **context,
             "fetched_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         }
     }
 
 def parse_post_or_video(html, soup, url, category, index, input_name=""):
+    search_area = ExtractorHelper.get_search_area(soup)
+    target_ids = ExtractorHelper.get_facebook_ids(url, html)
     owner_name = ""
-    og_title = ExtractorHelper.get_meta(soup, "og:title") or ""
-    
-    if "views" in og_title and "|" in og_title:
-        parts = [p.strip() for p in og_title.split("|")]
-        if len(parts) >= 2:
-            owner_name = parts[-1]
+
+    if target_ids:
+        for script in soup.find_all("script", type=["application/json"]):
+            text = script.string
+            if not text or not any(t in text for t in target_ids): continue
+            try:
+                data = json.loads(text)
+                target_node = ExtractorHelper.isolate_post_node(data, target_ids)
+                def _hunt_owner(obj, depth=0):
+                    if depth > 30 or not isinstance(obj, (dict, list)): return None
+                    if isinstance(obj, dict):
+                        if obj.get('__typename') in ('User', 'Page', 'Group') and obj.get('name'): return obj['name']
+                        if 'actors' in obj and isinstance(obj['actors'], list) and obj['actors']:
+                            actor = obj['actors'][0]
+                            if isinstance(actor, dict) and actor.get('name'): return actor['name']
+                        if 'owner' in obj and isinstance(obj['owner'], dict) and obj['owner'].get('name'): return obj['owner']['name']
+                        for v in obj.values():
+                            r = _hunt_owner(v, depth + 1)
+                            if r: return r
+                    elif isinstance(obj, list):
+                        for item in obj:
+                            r = _hunt_owner(item, depth + 1)
+                            if r: return r
+                    return None
+                found = _hunt_owner(target_node)
+                if found:
+                    owner_name = re.sub(r'\s*verified account\s*', '', found, flags=re.I).strip()
+                    if owner_name: break
+            except Exception: continue
+
+    if not owner_name:
+        profile_name_el = search_area.find(attrs={'data-ad-rendering-role': 'profile_name'})
+        if profile_name_el: owner_name = re.sub(r'\s*verified account\s*', '', profile_name_el.get_text(separator=' ', strip=True), flags=re.I).strip()
+
+    if not owner_name:
+        og_title = ExtractorHelper.get_meta(soup, "og:title") or ""
+        if og_title and not re.search(r'[|·•]', og_title): owner_name = og_title.strip()
 
     is_video = any(x in url for x in ['/watch/', '/videos/'])
-    shortcode_match = re.search(r'(pfbid[a-zA-Z0-9]+)', url) or re.search(r'/(\d+)/?$', url)
-    media_id = shortcode_match.group(1) if shortcode_match else None
-
-    caption, description = ExtractorHelper.get_clean_text(html, soup, owner_name, media_id)
+    caption, description = ExtractorHelper.get_clean_text(html, soup, owner_name, target_ids)
     
     if not caption:
-        main_area = soup.find(attrs={"role": "main"}) or soup
-        for h1 in main_area.find_all('h1'):
+        for h1 in search_area.find_all('h1'):
             text = h1.get_text(separator=" ", strip=True)
-            if text and not ExtractorHelper.is_auto_generated(text):
+            if text and not ExtractorHelper.is_auto_generated(text, owner_name):
                 caption = text
                 break
-        
-        if not caption:
-            valid_blocks = ExtractorHelper.extract_text_blocks(soup, exclude_strings=[owner_name])
-            if len(valid_blocks) > 0:
-                caption = valid_blocks[0]
 
-    if not caption and input_name:
-        caption = input_name
+    if not caption and input_name: caption = input_name
 
-    video_url, thumbnail_url = ExtractorHelper.get_media_elements(html, soup, is_video, media_id)
-    context = ExtractorHelper.get_post_context(html)
+    video_url, thumbnail_url = ExtractorHelper.get_media_elements(html, soup, is_video, target_ids)
+    accessibility_caption = ExtractorHelper.get_accessibility_caption(soup, html, thumbnail_url, target_ids)
+    context = ExtractorHelper.get_post_context(soup, html, target_ids)
+    likes, comments = ExtractorHelper.get_metrics(soup, html, target_ids)
 
-    likes, comments = ExtractorHelper.get_metrics(soup, html, media_id)
-
-    comment_data = ExtractorHelper.extract_comments(html, media_id)
+    comment_data = ExtractorHelper.extract_comments(html, target_ids)
     if description in comment_data: comment_data.remove(description)
     if caption in comment_data: comment_data.remove(caption)
 
     return {
-        "post_index": index, 
-        "post_url": url, 
-        "facebook_category": category, 
-        "status": "success",
+        "post_index": index, "post_url": url, "facebook_category": category, "status": "success",
         "metadata": {
-            "media_id": media_id or "UNKNOWN_ID",
+            "media_id": ExtractorHelper.pick_best_media_id(target_ids),
             "typename": "GraphVideo" if is_video else "GraphImage",
-            "is_video": is_video, 
-            "video_url": video_url, 
-            "thumbnail_url": thumbnail_url,
-            "like_count": likes,
-            "comment_count": comments,
-            "relevant_comments": comment_data,
-            "caption": caption or "", 
-            "description": description or "", 
-            "caption_hashtags": re.findall(r"#(\w+)", str(description or caption)),
+            "is_video": is_video, "video_url": video_url, "thumbnail_url": thumbnail_url,
+            "accessibility_caption": accessibility_caption, "like_count": likes, "comment_count": comments,
+            "relevant_comments": comment_data, "caption": caption or "", "description": description or "", 
+            "caption_hashtags": ExtractorHelper.get_hashtags(caption, description, soup),
             "owner_username": owner_name or (url.split('/')[3] if len(url.split('/')) > 3 else None),
             **context,
             "fetched_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -588,28 +1011,45 @@ def parse_post_or_video(html, soup, url, category, index, input_name=""):
 
 def parse_facebook_url(html_content, target_url, category, post_index, input_name=""):
     soup = BeautifulSoup(html_content, 'html.parser')
+
+    BLOCKED_SIGNALS = [
+        "this content isn't available", "this content is no longer available",
+        "this page isn't available", "you must log in to continue",
+    ]
+    page_text_lower = soup.get_text(separator=" ", strip=True).lower()
+    is_blocked = any(sig in page_text_lower for sig in BLOCKED_SIGNALS)
     
-    if "/reel/" in target_url: url_type = "REEL"
-    elif any(x in target_url for x in ['/watch/', '/videos/', '/posts/', '/photo/', '/story.php']): url_type = "POST_OR_VIDEO"
-    elif "/groups/" in target_url: url_type = "GROUP"
-    else: url_type = "PROFILE"
+    og_title_val = ExtractorHelper.get_meta(soup, "og:title")
+    page_title = (soup.title.string or "").strip()
+    if not og_title_val and page_title.lower() in ("facebook", ""):
+        is_blocked = True
 
-    switch = {
-        "PROFILE": parse_profile_page,
-        "GROUP": parse_profile_page,
-        "REEL": parse_reel,
-        "POST_OR_VIDEO": parse_post_or_video
-    }
+    if is_blocked:
+        reason = "Post is unavailable — it may be deleted, private, or geo-restricted."
+        for sig in BLOCKED_SIGNALS:
+            if sig in page_text_lower:
+                reason = sig.capitalize() + "."
+                break
+        return {
+            "post_index": post_index, "post_url": target_url, "facebook_category": category,
+            "status": "blocked", "error_message": reason, "metadata": None,
+            "fetched_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        }
 
-    return switch.get(url_type, parse_post_or_video)(html_content, soup, target_url, category, post_index, input_name)
+    if "/reel/" in target_url:
+        return parse_reel(html_content, soup, target_url, category, post_index, input_name)
+    elif any(x in target_url for x in ['/watch/', '/videos/', '/posts/', '/photo/', '/story.php']) or ("permalink.php" in target_url and "story_fbid=" in target_url):
+        return parse_post_or_video(html_content, soup, target_url, category, post_index, input_name)
+    else:
+        return parse_page(html_content, soup, target_url, category, post_index, input_name)
 
-def scrape_visited_history(input_json, output_json, limit=None):
+def scrape_visited_history(input_csv, output_json, limit=None):
     script_start_time = time.time()
     
-    with open(input_json, "r", encoding="utf-8") as f: history_data = json.load(f)
-
-    targets = [{"uri": r.get("uri") or r.get("url"), "category": r.get("category", "Unknown"), "name": r.get("name", "")} 
-               for r in (history_data.get("visits", []) or history_data.get("views", [])) if r.get("uri") or r.get("url")]
+    with open(input_csv, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        targets = [{"uri": r["url"], "category": r.get("category", "Unknown"), "name": r.get("name", "")}
+                   for r in reader if r.get("url")]
 
     scraped_data, scraped_urls = [], set()
     attempt_count, success_count, fail_count = 0, 0, 0
@@ -621,7 +1061,9 @@ def scrape_visited_history(input_json, output_json, limit=None):
                 if "results" in existing_output:
                     scraped_data = existing_output.get("results", [])
                     old_summary = existing_output.get("run_summary", {})
-                    attempt_count, success_count, fail_count = old_summary.get("total_posts_attempted", 0), old_summary.get("successfully_fetched", 0), old_summary.get("failed_to_fetch", 0)
+                    attempt_count = old_summary.get("total_posts_attempted", 0)
+                    success_count = old_summary.get("successfully_fetched", 0)
+                    fail_count = old_summary.get("failed_to_fetch", 0)
                 else: scraped_data = existing_output if isinstance(existing_output, list) else []
                 scraped_urls = {item.get("post_url", item.get("scraped_url")) for item in scraped_data}
         except json.JSONDecodeError: pass
@@ -635,11 +1077,7 @@ def scrape_visited_history(input_json, output_json, limit=None):
 
     chrome_options = Options()    
     chrome_options.add_argument(f"user-data-dir={os.path.join(os.getcwd(), 'ChromeScraperProfile')}")
-    
-    # Disable standard automation flags
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-    
-    # Exclude the "Chrome is being controlled by automated test software" infobar
     chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
     chrome_options.add_experimental_option('useAutomationExtension', False)
 
@@ -649,7 +1087,6 @@ def scrape_visited_history(input_json, output_json, limit=None):
     print(f"Launching scraper for {len(remaining_targets)} URLs...")
     driver = webdriver.Chrome(options=chrome_options)
 
-    # CDP INJECTION: Mathematically erase the webdriver flag from the JavaScript engine
     driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
         'source': '''
             Object.defineProperty(navigator, 'webdriver', {
@@ -668,7 +1105,7 @@ def scrape_visited_history(input_json, output_json, limit=None):
         with open(output_json, 'w', encoding='utf-8') as f:
             json.dump({
                 "run_summary": {
-                    "input_file": os.path.abspath(input_json), "output_file": os.path.abspath(output_json),
+                    "input_file": os.path.abspath(input_csv), "output_file": os.path.abspath(output_json),
                     "total_posts_in_file": len(targets), "scrape_limit_applied": limit,
                     "authenticated": is_logged_in, "total_posts_attempted": attempt_count,
                     "successfully_fetched": success_count, "failed_to_fetch": fail_count,
@@ -687,14 +1124,42 @@ def scrape_visited_history(input_json, output_json, limit=None):
             attempt_count += 1
             
             try:
+                # Flush the React SPA DOM before navigating to the next URL.
+                driver.get("about:blank")
                 driver.get(url)
-                time.sleep(9)
-                # Pass the JSON name downward into the router
+                
+                # Wait for initial page load (replaces the blind time.sleep(4))
+                try:
+                    WebDriverWait(driver, 10).until(
+                        lambda d: d.execute_script("return document.readyState") == "complete"
+                    )
+                except Exception:
+                    pass  
+                
+                # Scroll to trigger React lazy-loading of JSON script payloads
+                try:
+                    driver.execute_script("window.scrollTo(0, document.body.scrollHeight/2);")
+                except Exception:
+                    pass
+                
+                _url_id_match = re.search(r'(pfbid[a-zA-Z0-9]+)', url) or re.search(r'/(\d{10,})(?:/|\?|$)', url)
+                _url_id = _url_id_match.group(1) if _url_id_match else None
+
+                _data_markers = ['"post_id"', '"profile_picture"', '"story_node"', '"reaction_count"']
+                try:
+                    WebDriverWait(driver, 6).until(
+                        lambda d: any(mk in d.page_source for mk in _data_markers)
+                        and (not _url_id or _url_id in d.page_source)
+                    )
+                except Exception:
+                    pass 
+
                 post_data = parse_facebook_url(driver.page_source, url, category, global_index, target["name"])
                 scraped_data.append(post_data)
                 success_count += 1
                 save_state()
-                if index < len(remaining_targets): time.sleep(random.uniform(6.0, 18.0))
+                
+                if index < len(remaining_targets): time.sleep(random.uniform(4.0, 10.0))
             except Exception as e:
                 fail_count += 1
                 scraped_data.append({"post_index": global_index, "post_url": url, "status": "error", "error_message": str(e)})
@@ -705,8 +1170,8 @@ def scrape_visited_history(input_json, output_json, limit=None):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("-i", "--input", default="viewed_formatted.json")
-    parser.add_argument("-o", "--output", default="scraped_viewed_metadata.json")
+    parser.add_argument("-i", "--input", default="json_data_formatted.csv")
+    parser.add_argument("-o", "--output", default="viewed_metadata.json")
     parser.add_argument("-l", "--limit", type=int, default=None)
     args = parser.parse_args()
     scrape_visited_history(args.input, args.output, args.limit)
