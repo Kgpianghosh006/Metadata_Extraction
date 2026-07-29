@@ -186,7 +186,6 @@ Only the `post_url` and `shortcode` fields are needed by the scraper.
 ## Note
 
 If you encounter rate limit errors (`429 Too Many Requests`) or `LoginRequiredException` while scraping:
-- Try to increase the `time.sleep` interval between requests in `metadata_scraper.py`.
 - Re-authenticate by refreshing your `sessionid` cookie from the browser and running `init_profile.py` again.
 
 ## License
