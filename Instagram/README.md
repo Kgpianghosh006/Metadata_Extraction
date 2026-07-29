@@ -5,8 +5,8 @@ A lightweight set of Python scripts that automate the extraction of Instagram po
 ## Overview
 These four scripts work together to:
 1. **Create a persistent Instagram session** that stores your login cookies for authenticated scraping.
-2. **Convert the raw `posts_viewed.json`** (downloaded from Instagram) into a tidy list of URLs.
-3. **Visit each URL**, scrape useful metadata (post ID, timestamps, like counts, comment counts, captions, etc.) and store the results in `posts_metadata.json`.
+2. **Convert the zip folder** (downloaded from Instagram) into a tidy list of URLs.
+3. **Visit each URL**, scrape useful metadata (post ID, timestamps, like counts, comment counts, captions, etc.) and store the results in `posts_meta_output.json`.
 4. **Download any media** (videos and images) referenced in the scraped metadata.
 
 ---
@@ -22,9 +22,9 @@ pip install instaloader requests
 | File | Purpose |
 |------|---------|
 | `init_profile.py`| Prompts you for your Instagram username and session ID cookie, then saves the session locally so `instaloader` can reuse it. |
-| `json_formatter.py`| Reads `posts_viewed.json` (or your own input json file) and writes a clean `posts_formatted.json` (or your own output formatted json file name) containing a flat list of unique URLs and associated metadata. |
-| `metadata_scraper.py` | Iterates over the formatted URLs, scrapes post metadata using `instaloader`, and saves the result to `posts_metadata.json` (or your own output metadata json file name). Can run in authenticated or anonymous mode. |
-| `media_downloader.py` | Consumes the JSON produced by the scraper and downloads all media files into a structured `downloaded_media/` directory (or your own directory name). |
+| `json_formatter.py`| Reads `instagram_data.zip` (or your own instagram data zip folder) and writes a clean `json_data_formatted.csv` (or your own output formatted csv file) containing a flat list of unique URLs and associated metadata. |
+| `metadata_scraper.py` | Iterates over the formatted URLs, scrapes post metadata using `instaloader`, and saves the result to `posts_meta_output.json` (or your own output metadata json file). Can run in authenticated or anonymous mode. |
+| `media_downloader.py` | Consumes the JSON produced by the scraper and downloads all media files into a structured `downloaded_media/` directory (or your own directory). |
 
 ---
 
@@ -33,8 +33,8 @@ pip install instaloader requests
 ```mermaid
 flowchart TD
     A[init_profile.py] -->|creates Instagram session| B[json_formatter.py]
-    B -->|produces posts_formatted.json| C[metadata_scraper.py]
-    C -->|produces posts_metadata.json| D[media_downloader.py]
+    B -->|produces json_data_formatted.csv| C[metadata_scraper.py]
+    C -->|produces posts_meta_output.json| D[media_downloader.py]
     D -->|downloads videos/images| E[downloaded_media/]
 ```
 
@@ -58,14 +58,14 @@ python init_profile.py
 
 ### 2️⃣ Format the raw JSON (`json_formatter.py`)
 ```powershell
-python json_formatter.py -i posts_viewed.json -o posts_formatted.json
+python json_formatter.py -i <instagram data zip folder> -o json_data_formatted.csv
 ```
 - The script extracts the URL for each entry, de‑duplicates them, and adds standard timestamps.
-- Result: `posts_formatted.json` – a tidy JSON with a top‑level `posts` array and a `meta` block.
+- Result: `json_data_formatted.csv` – a tidy csv file.
 
 ### 3️⃣ Scrape Metadata (`metadata_scraper.py`)
 ```powershell
-python metadata_scraper.py -i posts_formatted.json -o posts_metadata.json -u <Instagram_Username> -l 50 # optional: stop after 50 URLs
+python metadata_scraper.py -i json_data_formatted.csv -o posts_meta_output.json -u <Instagram_Username> -l 50 # optional: stop after 50 URLs
 ```
 - Reads the formatted URLs and fetches detailed metadata for each post using `instaloader`.
 - Extracts:
@@ -78,7 +78,7 @@ python metadata_scraper.py -i posts_formatted.json -o posts_metadata.json -u <In
 
 ### 4️⃣ Download Media (`media_downloader.py`)
 ```powershell
-python media_downloader.py -i posts_metadata.json -dir downloaded_media
+python media_downloader.py -i posts_meta_output.json -dir downloaded_media
 ```
 - Traverses the `results` array and fetches each media URL using `requests` (streamed download).
 - Files are stored in `downloaded_media/<SHORTCODE>/`:
@@ -88,62 +88,29 @@ python media_downloader.py -i posts_metadata.json -dir downloaded_media
 
 ---
 
-## JSON Formats Explained
+## Output Formats Explained
 
-### `posts_viewed.json`
-The raw export from Instagram. Each entry typically contains a `label_values` array.
-```json
-[
-  {
-    "title": "Post",
-    "timestamp": 1690000000,
-    "label_values": [
-      {
-        "label": "URL",
-        "value": "https://www.instagram.com/p/ABCDE12345/"
-      }
-    ]
-  }
-]
-```
+The `json_formatter.py` script normalizes Facebook data exports and outputs a deduplicated CSV file (`json_data_formatted.csv`).
 
-### `posts_formatted.json`
-```json
-{
-  "meta": {
-    "source_file": "posts_viewed.json",
-    "total_raw_entries": 1234,
-    "total_unique_posts": 1000,
-    "skipped_no_url": 0,
-    "skipped_duplicate": 234,
-    "generated_at_utc": "2026-06-23T02:00:00Z"
-  },
-  "posts": [
-    {
-      "post_index": 1,
-      "post_url": "https://www.instagram.com/p/ABCDE12345/",
-      "shortcode": "ABCDE12345",
-      "timestamp_unix": 1690000000,
-      "timestamp_iso": "2023-07-22T08:53:20Z",
-      "fbid": null,
-      "owner": {
-        "name": "Jane Doe",
-        "username": "janedoe",
-        "profile_url": "https://www.instagram.com/janedoe/"
-      }
-    }
-    // "… more entries …"
-  ]
-}
-```
+### Schema Definition
+
+| Column Header | Data Type | Description | Example |
+| :--- | :--- | :--- | :--- |
+| `source_file` | String | Original Facebook JSON file parsed | `recently_viewed.json` |
+| `category` | String | Extracted activity label or event classification | `Viewed Content` |
+| `name` | String | Target entity display name or event title | `Official Post` |
+| `url` | String | Normalized Facebook URI | `https://www.instagram.com/1000759...` |
+| `timestamp_unix` | Integer / String | Raw epoch timestamp from export source | `1772433600` |
+| `timestamp_iso` | String (ISO-8601) | Converted UTC timestamp (`YYYY-MM-DDTHH:MM:SSZ`) | `2026-03-01T06:40:00Z` |
+
 Only the `post_url` and `shortcode` fields are needed by the scraper.
 
-### `posts_metadata.json`
+### `posts_meta_output.json`
 ```json
 {
   "run_summary": {
-    "input_file": "posts_formatted.json",
-    "output_file": "posts_metadata.json",
+    "input_file": "json_data_formatted.csv",
+    "output_file": "posts_meta_output.json",
     "total_posts_in_file": 1000,
     "scrape_limit_applied": 50,
     "authenticated": true,
@@ -171,6 +138,7 @@ Only the `post_url` and `shortcode` fields are needed by the scraper.
         "thumbnail_url": "URL of the post's thumbnail image or primary photo",
         "like_count": "Total number of likes the post received",
         "comment_count": "Total number of comments on the post",
+        "relevant_comments": Gives a list of top 6 relevant comments,
         "caption": "The main text/caption written by the post owner",
         "caption_hashtags": "List of hashtags extracted from the post's caption",
         "caption_mentions": "List of user accounts mentioned within the caption text",
