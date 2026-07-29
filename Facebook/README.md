@@ -22,9 +22,9 @@ pip install selenium beautifulsoup4 requests
 | File | Purpose |
 |------|---------|
 | `init_profile.py`| Launches an automated Chrome instance, prompts you to log in to Facebook, and saves the profile including the cookies in `ChromeScraperProfile/`. |
-| `json_formatter.py`| Reads `facebook_data.zip` (or your own facebook data zip folder) and writes a clean `json_data_formatted.csv` (or your own output formatted csv file name) containing a flat list of URLs and associated metadata. |
-| `metadata_scraper.py` | Iterates over the formatted URLs, scrapes post metadata using Selenium + BeautifulSoup4, and saves the result to `viewed_metadata.json` (or your own output metadata json file name). |
-| `media_downloader.py` | Consumes the JSON produced by the scraper and downloads all media files into a structured `downloaded_media/` directory (or your own directory name). |
+| `json_formatter.py`| Reads `facebook_data.zip` (or your own facebook data zip folder) and writes a clean `json_data_formatted.csv` (or your own output formatted csv file) containing a flat list of URLs and associated metadata. |
+| `metadata_scraper.py` | Iterates over the formatted URLs, scrapes post metadata using Selenium + BeautifulSoup4, and saves the result to `viewed_metadata.json` (or your own output metadata json file). |
+| `media_downloader.py` | Consumes the JSON produced by the scraper and downloads all media files into a structured `downloaded_media/` directory (or your own directory). |
 
 ---
 
@@ -58,7 +58,7 @@ python init_profile.py
 python json_formatter.py -i recently_viewed.json -o json_data_formatted.csv
 ```
 - The script extracts the `uri` (URL) for each entry and de‑duplicates them.
-- Result: `json_data_formatted.csv` – a tidy csv file \
+- Result: `json_data_formatted.csv` – a tidy csv file.
 
 ### 3️⃣ Scrape Metadata (`metadata_scraper.py`)
 ```powershell
