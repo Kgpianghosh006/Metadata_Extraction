@@ -5,8 +5,8 @@ A lightweight set of Python scripts that automate the extraction of Facebook pos
 ## Overview
 These four scripts work together to:
 1. **Create a persistent Chrome user‑profile** that stores your Facebook login cookies.
-2. **Convert the raw `recently_viewed.json`** (downloaded from Facebook) into a tidy list of URLs.
-3. **Visit each URL**, scrape useful metadata (post ID, timestamps, like counts, comment counts, captions, etc.) and store the results in `scraped_viewed_metadata.json`.
+2. **Convert the raw zip folder** (downloaded from Facebook) into a tidy list of URLs.
+3. **Visit each URL**, scrape useful metadata (post ID, timestamps, like counts, comment counts, captions, etc.) and store the results in `viewed_metadata.json`.
 4. **Download any media** (videos, thumbnails, profile pictures) referenced in the scraped metadata.
 
 ---
@@ -55,7 +55,7 @@ python init_profile.py
 
 ### 2️⃣ Format the raw JSON (`fb_json_formatter.py`)
 ```powershell
-python json_formatter.py -i recently_viewed.json -o json_data_formatted.csv
+python json_formatter.py -i <faceook data zip folder> -o json_data_formatted.csv
 ```
 - The script extracts the `uri` (URL) for each entry and de‑duplicates them.
 - Result: `json_data_formatted.csv` – a tidy csv file.
@@ -75,7 +75,7 @@ python metadata_scraper.py -i json_data_formatted.csv -o viewed_metadata.json -l
 
 ### 4️⃣ Download Media (`media_downloader.py`)
 ```powershell
-python media_downloader.py -i scraped_viewed_metadata.json -dir downloaded_media
+python media_downloader.py -i viewed_metadata.json -dir downloaded_media
 ```
 - Traverses the `results` array and fetches each media URL using `requests` (streamed download).
 - Files are stored in `downloaded_media/<MEDIA_ID>/`:
@@ -146,7 +146,7 @@ The `json_formatter.py` script normalizes Facebook data exports and outputs a de
         "fetched_at_utc": "UTC timestamp when the metadata is fetched"
       }
     },
-        //"..For Profile or group.."
+        //"..For Profile or group or page.."
     {
       "post_index": "Sequential index assigned by the scraper",
       "post_url": "Scraped URL of the profile/page",
@@ -159,7 +159,7 @@ The `json_formatter.py` script normalizes Facebook data exports and outputs a de
         "category": "Type of the Profile or Page like Digital Creator, Comedian etc",
         "follower_count": "Follower count of the profile/page",
         "following_count": "Following count of the profile/page",
-        "profile_picture_url": "URL of the profile/page photo",
+        "profile_picture_url": "URL of the profile/page/cover photo",
         "bio_text": "Extract the about information of the profile/page(if available to be extracted)",
         "fetched_at_utc": "UTC timestamp when the metadata is fetched"
       }
