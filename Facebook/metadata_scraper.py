@@ -8,7 +8,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 
 class ExtractorHelper:
-    
+
     @staticmethod
     def get_meta(soup, prop):
         tag = soup.find("meta", property=prop) or soup.find("meta", attrs={"name": prop})
@@ -46,7 +46,7 @@ class ExtractorHelper:
         if re.search(r"posted an? (episode|video)|explore more in video", text_lower): return True
         if re.search(r"\d+[,.]?\d*\s*(likes?|followers?)\s*[·•]\s*\d", text_lower): return True
         if owner_name and text_lower.strip() == owner_name.lower().strip(): return True
-        if re.search(r"'s post:?\s*$", text_lower): return True
+        # Note: "'s post" pattern intentionally NOT filtered here
         return False
 
     @staticmethod
@@ -111,6 +111,7 @@ class ExtractorHelper:
             
         from urllib.parse import urlparse, parse_qs
         qs = parse_qs(urlparse(url).query)
+        # `id=` in permalink.php is the page-owner's ID, not the post ID — exclude it
         for param in ["story_fbid", "fbid", "v"]:
             if qs.get(param): tier1.append(qs.get(param)[0])
         if qs.get("set"): 
@@ -123,13 +124,6 @@ class ExtractorHelper:
             m = re.search(p, html)
             if m and m.group(1) not in tier1:
                 tier1.append(m.group(1))
-
-        # 3. Collect storyIDs from the HTML → tier2 only, do NOT decode them all here.
-        # A Facebook page embeds storyIDs for the target post AND for every sidebar / recommended post. Decoding all of them flooded tier3 with foreign post IDs
-        for m in re.finditer(r'"storyID"\s*:\s*"([^"\\]+)"', html):
-            encoded_id = m.group(1)
-            if encoded_id not in tier2:
-                tier2.append(encoded_id)
 
         url_pfbid = next((t for t in tier2 if str(t).startswith('pfbid')), None)
         if url_pfbid:
@@ -181,13 +175,25 @@ class ExtractorHelper:
         import base64 as _b64
         valid_targets = [str(tid) for tid in target_ids if tid]
         if not valid_targets: return {}
-        
-        # Each entry: (direct_score, node)
-        # direct_score 2 = a target ID exactly equals this node's own id/post_id/legacy_fbid
-        # direct_score 1 = substring or decoded-B64 match on this node's own id field
-        # direct_score 0 = target found only inside a descendant, not on this node itself
+
+        # Primary story typenames → +3 boost; sidebar containers → -2 penalty.
+        # Ensures the real Story node beats sidebar reference nodes that merely
+        # contain the target ID as a recommendation link.
+        _PRIMARY_TYPENAMES = {
+            "Story", "Video", "Photo", "Reel",
+            "CometReelsVideo", "CometShowcaseVideo", "CometFeedUnit",
+            "CometUFIReactionsAndCommentsCount", "CometUFIComments",
+            "GraphVideo", "GraphImage",
+        }
+        _SIDEBAR_TYPENAMES = {
+            "StoryCard", "RecommendedStories", "CometRightColumn",
+            "SidebarSection", "RecommendedContent", "AdUnit",
+            "CometNewsfeedEdge",
+        }
+
+        # (composite_score, direct_score, node)
         scored_nodes = []
-        
+
         def _decode_b64_id(node_id):
             if not node_id or len(node_id) < 8: return []
             try:
@@ -196,13 +202,14 @@ class ExtractorHelper:
                 return re.findall(r'\d{10,}', decoded)
             except Exception:
                 return []
-        
+
         def traverse(node):
             if isinstance(node, dict):
                 node_id = str(node.get("id", ""))
                 node_post_id = str(node.get("post_id", ""))
                 node_legacy_id = str(node.get("legacy_fbid", ""))
-                
+                node_typename = node.get("__typename", "")
+
                 # Score this node's OWN identity fields — not its children.
                 direct_score = 0
                 for t in valid_targets:
@@ -219,54 +226,61 @@ class ExtractorHelper:
                         if any(t == num for t in valid_targets):
                             direct_score = 1
                             break
-                
+
                 child_has_target = False
                 for k, v in node.items():
                     if traverse(v):
                         child_has_target = True
-                        
+
                 contains_target = bool(direct_score) or child_has_target
-                
+
                 if contains_target:
                     is_valid = any(key in node for key in [
                         "message", "feedback", "comments", "reaction_count", "comment_count",
                         "likers", "unified_reactors", "total_comment_count"
                     ])
-                    if not is_valid and node.get("__typename") in ["Story", "Video", "CometReelsVideo", "Reel", "CometShowcaseVideo"]:
+                    if not is_valid and node_typename in _PRIMARY_TYPENAMES:
                         is_valid = True
-                        
+
                     if is_valid:
-                        scored_nodes.append((direct_score, node))
-                
+                        if node_typename in _PRIMARY_TYPENAMES: typename_boost = 3
+                        elif node_typename in _SIDEBAR_TYPENAMES: typename_boost = -2
+                        else: typename_boost = 0
+                        composite = direct_score + typename_boost
+                        scored_nodes.append((composite, direct_score, node))
+
                 return contains_target
-                
+
             elif isinstance(node, list):
                 child_has_target = False
                 for item in node:
                     if traverse(item): child_has_target = True
                 return child_has_target
-                
+
             elif isinstance(node, str) and any(t in node for t in valid_targets):
                 return True
             elif isinstance(node, (int, float)) and any(str(node) == t for t in valid_targets):
                 return True
-                
+
             return False
 
         traverse(obj)
-        if not scored_nodes:
-            return {}
-        # Prefer the highest-scored node (direct ID match beats inherited).
-        # Among ties, take the last one in traversal order (deepest = most specific subtree).
-        best_score = max(s for s, _ in scored_nodes)
-        best_nodes = [n for s, n in scored_nodes if s == best_score]
+        if not scored_nodes: return {}
+        best_composite = max(c for c, _, _ in scored_nodes)
+        best_direct    = max(d for c, d, _ in scored_nodes if c == best_composite)
+        best_nodes     = [n for c, d, n in scored_nodes if c == best_composite and d == best_direct]
         return best_nodes[-1]
+
+    _CAPTION_SENTINELS = {
+        "notifications", "facebook", "log in or sign up", "home", "menu",
+        "watch", "reels", "groups", "marketplace", "search",
+    }
 
     @staticmethod
     def get_clean_text(html_text, soup, owner_name="", target_ids=None):
         og_title = ExtractorHelper.get_meta(soup, "og:title") or ""
-        og_desc = ExtractorHelper.get_meta(soup, "og:description") or ""
-
+        og_desc  = ExtractorHelper.get_meta(soup, "og:description") or ""
+        browser_title = soup.title.string if soup.title else ""
         caption, description = None, None
 
         if og_title:
@@ -281,16 +295,25 @@ class ExtractorHelper:
                     caption = candidate
             elif og_title and og_title.strip().lower() != (owner_name or "").lower():
                 caption = og_title
+        elif browser_title:
+            _bt = re.sub(r'^\(\d+\)\s*', '', browser_title).strip()
+            _bt = re.sub(r'\s*\|\s*Facebook\s*$', '', _bt, flags=re.I).strip()
+            if " - " in _bt:
+                _candidate = re.sub(r'\s*\.\.\.\s*$', '', _bt.split(" - ", 1)[1]).strip()
+                if _candidate and _candidate.lower() not in ExtractorHelper._CAPTION_SENTINELS:
+                    if not ExtractorHelper.is_auto_generated(_candidate, owner_name):
+                        caption = _candidate
+
+        if caption and caption.strip().lower() in ExtractorHelper._CAPTION_SENTINELS:
+            caption = None
 
         og_desc_truncated = og_desc.rstrip().endswith("...")
         description = og_desc if not og_desc_truncated else None
 
-        if ExtractorHelper.is_auto_generated(caption, owner_name): caption = None
+        if ExtractorHelper.is_auto_generated(caption, owner_name):     caption = None
         if ExtractorHelper.is_auto_generated(description, owner_name): description = None
-        
+
         valid_targets = target_ids or []
-        
-        # Always search JSON for description if: we have no description, OR og:description was truncated
         needs_json_desc = (not description) or og_desc_truncated
         if (not caption or needs_json_desc) and valid_targets:
             def hunt_text(obj):
@@ -301,10 +324,9 @@ class ExtractorHelper:
                         if not caption and not ExtractorHelper.is_auto_generated(t, owner_name): caption = t
                     if "message" in obj and isinstance(obj["message"], dict) and "text" in obj["message"]:
                         d = obj["message"]["text"]
-                        # Prefer JSON message: it's full text, whereas og:desc may be truncated
                         if d and not ExtractorHelper.is_auto_generated(d, owner_name):
-                            if needs_json_desc or not description:
-                                description = d
+                            if needs_json_desc or not description: description = d
+                            if not caption: caption = d
                     for v in obj.values(): hunt_text(v)
                 elif isinstance(obj, list):
                     for item in obj: hunt_text(item)
@@ -319,7 +341,6 @@ class ExtractorHelper:
                     if caption and description: break
                 except Exception: continue
 
-        # Final fallback: if JSON search didn't find description, use truncated og:description
         if not description and og_desc and not ExtractorHelper.is_auto_generated(og_desc, owner_name):
             description = og_desc
 
@@ -906,10 +927,19 @@ def parse_reel(html, soup, url, category, index, input_name=""):
         if og_title and not re.search(r'[|·•]', og_title): owner = og_title.strip() or None
 
     caption, description = ExtractorHelper.get_clean_text(html, soup, owner, target_ids)
+    # input_name (from CSV) is always preferred as caption — it's the exact FB post heading.
+    # The h2[dir=auto] is the fallback for when input_name is absent.
+    if input_name:
+        caption = input_name
+    elif not caption:
+        h2_el = search_area.find('h2', attrs={'dir': 'auto'})
+        if h2_el:
+            h2_text = h2_el.get_text(separator=' ', strip=True)
+            if h2_text and h2_text.strip().lower() not in ExtractorHelper._CAPTION_SENTINELS:
+                caption = h2_text
     if not caption:
         valid_blocks = ExtractorHelper.extract_text_blocks(soup, exclude_strings=[owner])
         if len(valid_blocks) > 0: caption = valid_blocks.pop(0)
-    if not caption and input_name: caption = input_name
 
     video_url, thumbnail_url = ExtractorHelper.get_media_elements(html, soup, True, target_ids)
     accessibility_caption = ExtractorHelper.get_accessibility_caption(soup, html, thumbnail_url, target_ids)
@@ -975,15 +1005,23 @@ def parse_post_or_video(html, soup, url, category, index, input_name=""):
 
     is_video = any(x in url for x in ['/watch/', '/videos/'])
     caption, description = ExtractorHelper.get_clean_text(html, soup, owner_name, target_ids)
-    
+
+    # input_name (from CSV) is always preferred as caption — it's the exact FB post heading.
+    # The h2[dir=auto] is the fallback for when input_name is absent.
+    if input_name:
+        caption = input_name
+    elif not caption:
+        h2_el = search_area.find('h2', attrs={'dir': 'auto'})
+        if h2_el:
+            h2_text = h2_el.get_text(separator=' ', strip=True)
+            if h2_text and h2_text.strip().lower() not in ExtractorHelper._CAPTION_SENTINELS:
+                caption = h2_text
     if not caption:
         for h1 in search_area.find_all('h1'):
             text = h1.get_text(separator=" ", strip=True)
             if text and not ExtractorHelper.is_auto_generated(text, owner_name):
                 caption = text
                 break
-
-    if not caption and input_name: caption = input_name
 
     video_url, thumbnail_url = ExtractorHelper.get_media_elements(html, soup, is_video, target_ids)
     accessibility_caption = ExtractorHelper.get_accessibility_caption(soup, html, thumbnail_url, target_ids)
@@ -1122,39 +1160,63 @@ def scrape_visited_history(input_csv, output_json, limit=None):
             global_index = len(scraped_data) + 1
             print(f"[{index}/{len(remaining_targets)}] {category} -> {url}")
             attempt_count += 1
+
+            # post_start_time = time.time()
             
             try:
-                # Flush the React SPA DOM before navigating to the next URL.
                 driver.get("about:blank")
+                try:
+                    WebDriverWait(driver, 5).until(
+                        lambda d: d.execute_script("return document.readyState") == "complete"
+                        and d.current_url == "about:blank"
+                    )
+                except Exception:
+                    pass
+
                 driver.get(url)
-                
-                # Wait for initial page load (replaces the blind time.sleep(4))
+
                 try:
                     WebDriverWait(driver, 10).until(
                         lambda d: d.execute_script("return document.readyState") == "complete"
                     )
                 except Exception:
-                    pass  
-                
-                # Scroll to trigger React lazy-loading of JSON script payloads
+                    pass
+
                 try:
                     driver.execute_script("window.scrollTo(0, document.body.scrollHeight/2);")
                 except Exception:
                     pass
-                
-                _url_id_match = re.search(r'(pfbid[a-zA-Z0-9]+)', url) or re.search(r'/(\d{10,})(?:/|\?|$)', url)
+
+                _url_id_match = (
+                    re.search(r'(pfbid[a-zA-Z0-9]+)', url)
+                    or re.search(r'story_fbid=(pfbid[a-zA-Z0-9]+)', url)
+                    or re.search(r'[/?]([0-9]{10,})(?:[/?]|$)', url)
+                )
                 _url_id = _url_id_match.group(1) if _url_id_match else None
 
-                _data_markers = ['"post_id"', '"profile_picture"', '"story_node"', '"reaction_count"']
-                try:
-                    WebDriverWait(driver, 6).until(
-                        lambda d: any(mk in d.page_source for mk in _data_markers)
-                        and (not _url_id or _url_id in d.page_source)
-                    )
-                except Exception:
-                    pass 
+                if _url_id:
+                    try:
+                        WebDriverWait(driver, 10).until(lambda d: _url_id in d.page_source)
+                    except Exception:
+                        pass
+                    time.sleep(1.5)  # DOM stability: let React finish injecting sibling scripts
+                else:
+                    try:
+                        WebDriverWait(driver, 6).until(
+                            lambda d: (any(mk in d.page_source
+                                         for mk in ['"post_id"', '"profile_picture"',
+                                                    '"story_node"', '"reaction_count"'])))
+                    except Exception:
+                        pass
 
                 post_data = parse_facebook_url(driver.page_source, url, category, global_index, target["name"])
+
+                # # For Stress Testing
+                # fetch_duration = round(time.time() - post_start_time, 3)
+                
+                # if post_data.get("metadata"):
+                #     post_data["metadata"]["fetch_time_seconds"] = fetch_duration
+
                 scraped_data.append(post_data)
                 success_count += 1
                 save_state()
@@ -1164,14 +1226,20 @@ def scrape_visited_history(input_csv, output_json, limit=None):
                 fail_count += 1
                 scraped_data.append({"post_index": global_index, "post_url": url, "status": "error", "error_message": str(e)})
                 save_state()
+
+                # BROWSER_RESTART_EVERY = 500  # restart every 500 posts
+                # if index > 1 and (index - 1) % BROWSER_RESTART_EVERY == 0:
+                #     driver.quit()              # kills the Chrome process
+                #     print(f"Launching scraper for {len(remaining_targets)} URLs...")
+                #     driver = webdriver.Chrome(options=chrome_options)
     finally:
         driver.quit()
         print(f"\nBrowser closed. Progress safely stored in '{output_json}'!")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("-i", "--input", default="json_data_formatted.csv")
-    parser.add_argument("-o", "--output", default="viewed_metadata.json")
+    parser.add_argument("-i", "--input", default="json_data_formatted1.csv")
+    parser.add_argument("-o", "--output", default="viewed1_metadata.json")
     parser.add_argument("-l", "--limit", type=int, default=None)
     args = parser.parse_args()
     scrape_visited_history(args.input, args.output, args.limit)
