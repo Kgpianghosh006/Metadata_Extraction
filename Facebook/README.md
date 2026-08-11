@@ -53,7 +53,7 @@ python init_profile.py
 - You have **100 seconds** to complete the login before the browser closes automatically.
 - The profile (including cookies) is stored in `ChromeScraperProfile/`, which will be reused by the later scripts.
 
-### 2️⃣ Format the raw JSON (`fb_json_formatter.py`)
+### 2️⃣ Format the raw JSON (`json_formatter.py`)
 ```powershell
 python json_formatter.py -i <faceook data zip folder> -o json_data_formatted.csv
 ```
